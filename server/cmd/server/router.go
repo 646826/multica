@@ -23,6 +23,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/service"
+	benchmarkservice "github.com/multica-ai/multica/server/internal/service/benchmark"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -107,6 +108,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		AllowedEmailDomains: splitAndTrim(os.Getenv("ALLOWED_EMAIL_DOMAINS")),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
+
+	// Benchmark feature (Multica × ProgramBench Phase 0). Kept as a sibling
+	// handler so the feature can be wired in or out independently of the
+	// monolithic *Handler.
+	benchmarkHandler := handler.NewBenchmarkHandler(handler.BenchmarkDeps{
+		Suites:   benchmarkservice.NewSuiteService(queries),
+		Profiles: benchmarkservice.NewProfileService(queries),
+	})
 	if opts.DaemonWakeup != nil {
 		h.TaskService.Wakeup = opts.DaemonWakeup
 	}
@@ -423,6 +432,26 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/tasks", h.ListAgentTasks)
 					r.Get("/skills", h.ListAgentSkills)
 					r.Put("/skills", h.SetAgentSkills)
+				})
+			})
+
+			// Benchmarks (Multica × ProgramBench Phase 0)
+			r.Route("/api/benchmarks", func(r chi.Router) {
+				r.Route("/suites", func(r chi.Router) {
+					r.Get("/", benchmarkHandler.ListSuites)
+					r.Post("/", benchmarkHandler.CreateSuite)
+					r.Route("/{id}", func(r chi.Router) {
+						r.Get("/", benchmarkHandler.GetSuite)
+						r.Delete("/", benchmarkHandler.DeleteSuite)
+					})
+				})
+				r.Route("/profiles", func(r chi.Router) {
+					r.Get("/", benchmarkHandler.ListProfiles)
+					r.Post("/", benchmarkHandler.CaptureProfile)
+					r.Route("/{id}", func(r chi.Router) {
+						r.Get("/", benchmarkHandler.GetProfile)
+						r.Delete("/", benchmarkHandler.DeleteProfile)
+					})
 				})
 			})
 
