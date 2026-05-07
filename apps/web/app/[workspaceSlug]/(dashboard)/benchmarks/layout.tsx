@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
+import { paths } from "@multica/core/paths";
 import { cn } from "@multica/ui/lib/utils";
 
 /**
@@ -15,21 +16,22 @@ import { cn } from "@multica/ui/lib/utils";
 type Tab = {
   key: "runs" | "suites" | "profiles" | "leaderboard";
   label: string;
-  segment: string;
+  href: string | null;
   enabled: boolean;
 };
-
-const TABS: Tab[] = [
-  { key: "runs", label: "Runs", segment: "runs", enabled: false },
-  { key: "suites", label: "Suites", segment: "suites", enabled: true },
-  { key: "profiles", label: "Profiles", segment: "profiles", enabled: true },
-  { key: "leaderboard", label: "Leaderboard", segment: "leaderboard", enabled: false },
-];
 
 export default function BenchmarksLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const params = useParams<{ workspaceSlug: string }>();
   const slug = params.workspaceSlug;
+  const wsPaths = paths.workspace(slug);
+
+  const tabs: Tab[] = [
+    { key: "runs", label: "Runs", href: null, enabled: false },
+    { key: "suites", label: "Suites", href: wsPaths.benchmarkSuites(), enabled: true },
+    { key: "profiles", label: "Profiles", href: wsPaths.benchmarkProfiles(), enabled: true },
+    { key: "leaderboard", label: "Leaderboard", href: null, enabled: false },
+  ];
 
   return (
     <div className="flex h-full flex-col">
@@ -37,15 +39,15 @@ export default function BenchmarksLayout({ children }: { children: React.ReactNo
         aria-label="Benchmarks sections"
         className="flex shrink-0 items-center gap-1 border-b border-border px-4"
       >
-        {TABS.map((tab) => {
-          const href = `/${slug}/benchmarks/${tab.segment}`;
-          const isActive = pathname === href || pathname.startsWith(href + "/");
+        {tabs.map((tab) => {
+          const isActive =
+            tab.href !== null && (pathname === tab.href || pathname.startsWith(tab.href + "/"));
           const baseClass =
             "relative -mb-px inline-flex items-center px-3 py-2.5 text-sm font-medium transition-colors";
           const activeClass = "border-b-2 border-foreground text-foreground";
           const inactiveClass = "border-b-2 border-transparent text-muted-foreground hover:text-foreground";
 
-          if (!tab.enabled) {
+          if (!tab.enabled || tab.href === null) {
             return (
               <span
                 key={tab.key}
@@ -65,7 +67,7 @@ export default function BenchmarksLayout({ children }: { children: React.ReactNo
           return (
             <Link
               key={tab.key}
-              href={href}
+              href={tab.href}
               aria-current={isActive ? "page" : undefined}
               className={cn(baseClass, isActive ? activeClass : inactiveClass)}
             >
