@@ -1,3 +1,1 @@
-export default function BenchmarkSuitesPage() {
-  return <div className="p-4 text-sm text-muted-foreground">Suites view coming soon.</div>;
-}
+export { SuitesList as default } from "@multica/views/benchmarks";
