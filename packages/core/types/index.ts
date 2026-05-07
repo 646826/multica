@@ -44,6 +44,15 @@ export type { NotificationGroupKey, NotificationGroupValue, NotificationPreferen
 export type { Comment, CommentType, CommentAuthorType, Reaction } from "./comment";
 export type { Label, CreateLabelRequest, UpdateLabelRequest, ListLabelsResponse, IssueLabelsResponse } from "./label";
 export type {
+  SkillRef,
+  BenchmarkSuite,
+  BenchmarkProfile,
+  CreateSuiteRequest,
+  CaptureProfileRequest,
+  ListBenchmarkSuitesResponse,
+  ListBenchmarkProfilesResponse,
+} from "./benchmark";
+export type {
   TimelineEntry,
   TimelinePage,
   TimelinePageParam,

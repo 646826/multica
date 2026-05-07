@@ -82,6 +82,12 @@ import type {
   ListAutopilotRunsResponse,
   NotificationPreferenceResponse,
   NotificationPreferences,
+  BenchmarkSuite,
+  BenchmarkProfile,
+  CreateSuiteRequest,
+  CaptureProfileRequest,
+  ListBenchmarkSuitesResponse,
+  ListBenchmarkProfilesResponse,
 } from "../types";
 import type { OnboardingCompletionPath } from "../onboarding/types";
 import { type Logger, noopLogger } from "../logger";
@@ -1265,5 +1271,53 @@ export class ApiClient {
 
   async deleteAutopilotTrigger(autopilotId: string, triggerId: string): Promise<void> {
     await this.fetch(`/api/autopilots/${autopilotId}/triggers/${triggerId}`, { method: "DELETE" });
+  }
+
+  // Benchmarks (ProgramBench)
+  //
+  // Error codes returned by these endpoints (flat `{"error": "<code>"}`):
+  //   400 instance_list_empty | bad_body | bad_id | bad_user_id | bad_workspace_id |
+  //       workspace_required | agent_not_found
+  //   401 unauthenticated
+  //   404 suite_not_found | profile_not_found
+  //   409 slug_taken
+  //   500 internal_error
+  // Mapping to user-facing strings is the consumer's job (see T14+).
+  async listBenchmarkSuites(): Promise<ListBenchmarkSuitesResponse> {
+    return this.fetch(`/api/benchmarks/suites`);
+  }
+
+  async getBenchmarkSuite(id: string): Promise<BenchmarkSuite> {
+    return this.fetch(`/api/benchmarks/suites/${id}`);
+  }
+
+  async createBenchmarkSuite(data: CreateSuiteRequest): Promise<BenchmarkSuite> {
+    return this.fetch(`/api/benchmarks/suites`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteBenchmarkSuite(id: string): Promise<void> {
+    await this.fetch(`/api/benchmarks/suites/${id}`, { method: "DELETE" });
+  }
+
+  async listBenchmarkProfiles(): Promise<ListBenchmarkProfilesResponse> {
+    return this.fetch(`/api/benchmarks/profiles`);
+  }
+
+  async getBenchmarkProfile(id: string): Promise<BenchmarkProfile> {
+    return this.fetch(`/api/benchmarks/profiles/${id}`);
+  }
+
+  async captureBenchmarkProfile(data: CaptureProfileRequest): Promise<BenchmarkProfile> {
+    return this.fetch(`/api/benchmarks/profiles`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteBenchmarkProfile(id: string): Promise<void> {
+    await this.fetch(`/api/benchmarks/profiles/${id}`, { method: "DELETE" });
   }
 }
