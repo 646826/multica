@@ -128,6 +128,67 @@ func mustParseUUID(t *testing.T, s string) pgtype.UUID {
 	return u
 }
 
+// agentSpec is the minimal description ProfileService tests need to insert
+// an agent fixture. Other agent columns (description, runtime config, etc.)
+// are filled with sensible defaults that satisfy the table's NOT NULL /
+// CHECK constraints.
+type agentSpec struct {
+	Name         string
+	Model        string
+	PromptSource string
+}
+
+// newFixtureAgent inserts an `agent_runtime` + `agent` pair scoped to the
+// fixture workspace. Returns the agent id. Cleanup happens via the workspace
+// CASCADE registered in newFixtureWorkspace, so no separate t.Cleanup is
+// needed here.
+func newFixtureAgent(t *testing.T, tx fixtureWorkspace, spec agentSpec) pgtype.UUID {
+	t.Helper()
+	ctx := context.Background()
+	seq := fixtureSeq.Add(1)
+
+	// agent.runtime_id is nullable in the schema, but the production code
+	// path always points to a real agent_runtime row. Insert one so the
+	// fixture matches what handlers see in practice.
+	var runtimeID pgtype.UUID
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_runtime (
+			workspace_id, daemon_id, name, runtime_mode, provider,
+			status, device_info, metadata, last_seen_at
+		)
+		VALUES ($1, NULL, $2, 'cloud', $3, 'online', $4, '{}'::jsonb, now())
+		RETURNING id
+	`,
+		tx.WorkspaceID,
+		fmt.Sprintf("Benchmark Svc Runtime %d", seq),
+		fmt.Sprintf("benchmark_svc_runtime_%d", seq),
+		"benchmark service test runtime",
+	).Scan(&runtimeID); err != nil {
+		t.Fatalf("insert agent_runtime: %v", err)
+	}
+
+	var agentID pgtype.UUID
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent (
+			workspace_id, name, description, runtime_mode, runtime_config,
+			runtime_id, visibility, max_concurrent_tasks, owner_id,
+			instructions, custom_env, custom_args, mcp_config, model
+		)
+		VALUES ($1, $2, '', 'cloud', '{}'::jsonb, $3, 'private', 1, $4, $5, '{}'::jsonb, '[]'::jsonb, NULL, $6)
+		RETURNING id
+	`,
+		tx.WorkspaceID,
+		spec.Name,
+		runtimeID,
+		tx.UserID,
+		spec.PromptSource,
+		spec.Model,
+	).Scan(&agentID); err != nil {
+		t.Fatalf("insert agent: %v", err)
+	}
+	return agentID
+}
+
 func TestSuiteService_Create_StoresAndReturns(t *testing.T) {
 	ctx := context.Background()
 	tx := newFixtureWorkspace(t)

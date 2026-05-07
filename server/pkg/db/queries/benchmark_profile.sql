@@ -26,5 +26,5 @@ SELECT * FROM benchmark_agent_profile
 WHERE workspace_id = $1 AND prompt_hash = $2
 LIMIT 1;
 
--- name: DeleteBenchmarkProfile :exec
+-- name: DeleteBenchmarkProfile :execrows
 DELETE FROM benchmark_agent_profile WHERE id = $1 AND workspace_id = $2;

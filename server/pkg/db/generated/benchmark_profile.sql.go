@@ -63,7 +63,7 @@ func (q *Queries) CreateBenchmarkProfile(ctx context.Context, arg CreateBenchmar
 	return i, err
 }
 
-const deleteBenchmarkProfile = `-- name: DeleteBenchmarkProfile :exec
+const deleteBenchmarkProfile = `-- name: DeleteBenchmarkProfile :execrows
 DELETE FROM benchmark_agent_profile WHERE id = $1 AND workspace_id = $2
 `
 
@@ -72,9 +72,12 @@ type DeleteBenchmarkProfileParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
-func (q *Queries) DeleteBenchmarkProfile(ctx context.Context, arg DeleteBenchmarkProfileParams) error {
-	_, err := q.db.Exec(ctx, deleteBenchmarkProfile, arg.ID, arg.WorkspaceID)
-	return err
+func (q *Queries) DeleteBenchmarkProfile(ctx context.Context, arg DeleteBenchmarkProfileParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteBenchmarkProfile, arg.ID, arg.WorkspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const findProfileByHash = `-- name: FindProfileByHash :one
