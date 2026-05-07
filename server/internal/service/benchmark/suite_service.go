@@ -116,12 +116,19 @@ func (s *SuiteService) List(ctx context.Context, workspaceID pgtype.UUID) ([]Sui
 	return out, nil
 }
 
-// Delete removes a suite scoped to the workspace.
+// Delete removes a suite scoped to the workspace. Returns ErrSuiteNotFound if no row matches.
 func (s *SuiteService) Delete(ctx context.Context, id, workspaceID pgtype.UUID) error {
-	return s.q.DeleteBenchmarkSuite(ctx, db.DeleteBenchmarkSuiteParams{
+	n, err := s.q.DeleteBenchmarkSuite(ctx, db.DeleteBenchmarkSuiteParams{
 		ID:          id,
 		WorkspaceID: workspaceID,
 	})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrSuiteNotFound
+	}
+	return nil
 }
 
 func rowToSuite(r db.BenchmarkSuite) Suite {

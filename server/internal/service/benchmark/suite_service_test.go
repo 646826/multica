@@ -22,7 +22,7 @@ import (
 // is skipped, mirroring those tests.
 
 var (
-	testPool   *pgxpool.Pool
+	testPool    *pgxpool.Pool
 	testQueries *db.Queries
 
 	// Process-unique counter for fixture slugs/emails so tests are isolated.
@@ -196,4 +196,34 @@ func TestSuiteService_List_ReturnsWorkspaceScoped(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	require.Equal(t, "a", got[0].Slug)
+}
+
+func TestSuiteService_Delete_RemovesAndIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	tx := newFixtureWorkspace(t)
+	s := benchmark.NewSuiteService(tx.Queries)
+
+	created, err := s.Create(ctx, benchmark.CreateSuiteInput{
+		WorkspaceID: tx.WorkspaceID, Slug: "to-delete", DisplayName: "X",
+		AdapterKind: "programbench", InstanceIDs: []string{"x"}, CreatedBy: tx.UserID,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, s.Delete(ctx, created.ID, tx.WorkspaceID))
+	require.ErrorIs(t, s.Delete(ctx, created.ID, tx.WorkspaceID), benchmark.ErrSuiteNotFound)
+}
+
+func TestSuiteService_Delete_RejectsCrossWorkspace(t *testing.T) {
+	ctx := context.Background()
+	tx := newFixtureWorkspace(t)
+	other := newFixtureWorkspace(t)
+	s := benchmark.NewSuiteService(tx.Queries)
+
+	created, err := s.Create(ctx, benchmark.CreateSuiteInput{
+		WorkspaceID: tx.WorkspaceID, Slug: "scoped", DisplayName: "X",
+		AdapterKind: "programbench", InstanceIDs: []string{"x"}, CreatedBy: tx.UserID,
+	})
+	require.NoError(t, err)
+
+	require.ErrorIs(t, s.Delete(ctx, created.ID, other.WorkspaceID), benchmark.ErrSuiteNotFound)
 }

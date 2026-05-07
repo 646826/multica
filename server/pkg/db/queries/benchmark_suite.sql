@@ -21,7 +21,7 @@ SET display_name = $3, instance_ids = $4, description = $5
 WHERE id = $1 AND workspace_id = $2
 RETURNING *;
 
--- name: DeleteBenchmarkSuite :exec
+-- name: DeleteBenchmarkSuite :execrows
 DELETE FROM benchmark_suite WHERE id = $1 AND workspace_id = $2;
 
 -- name: CountBenchmarkRunsForSuite :one
