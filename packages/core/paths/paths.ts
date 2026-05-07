@@ -33,6 +33,9 @@ function workspaceScoped(slug: string) {
     skills: () => `${ws}/skills`,
     skillDetail: (id: string) => `${ws}/skills/${encode(id)}`,
     settings: () => `${ws}/settings`,
+    benchmarks: () => `${ws}/benchmarks`,
+    benchmarkSuites: () => `${ws}/benchmarks/suites`,
+    benchmarkProfiles: () => `${ws}/benchmarks/profiles`,
   };
 }
 

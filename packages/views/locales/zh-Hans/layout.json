@@ -8,7 +8,8 @@
     "agents": "智能体",
     "runtimes": "运行时",
     "skills": "Skill",
-    "settings": "设置"
+    "settings": "设置",
+    "benchmarks": "基准测试"
   },
   "help": {
     "trigger": "帮助",

@@ -72,6 +72,7 @@ export const RESERVED_SLUGS = new Set([
   "runtimes",
   "skills",
   "settings",
+  "benchmarks",
   "workspaces", // global `/workspaces/new` workspace creation page
   "teams",      // reserved for future team management routes
 

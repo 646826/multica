@@ -18,6 +18,9 @@ describe("paths.workspace(slug)", () => {
     expect(ws.skills()).toBe("/acme/skills");
     expect(ws.skillDetail("skl_123")).toBe("/acme/skills/skl_123");
     expect(ws.settings()).toBe("/acme/settings");
+    expect(ws.benchmarks()).toBe("/acme/benchmarks");
+    expect(ws.benchmarkSuites()).toBe("/acme/benchmarks/suites");
+    expect(ws.benchmarkProfiles()).toBe("/acme/benchmarks/profiles");
   });
 
   it("URL-encodes special characters in ids", () => {

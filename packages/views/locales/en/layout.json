@@ -8,7 +8,8 @@
     "agents": "Agents",
     "runtimes": "Runtimes",
     "skills": "Skills",
-    "settings": "Settings"
+    "settings": "Settings",
+    "benchmarks": "Benchmarks"
   },
   "help": {
     "trigger": "Help",
