@@ -1,4 +1,3 @@
-/* eslint-disable i18next/no-literal-string -- T22 will wrap user-facing strings in t(...) */
 "use client";
 
 import { useMemo } from "react";
@@ -20,6 +19,9 @@ import { Input } from "@multica/ui/components/ui/input";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { useNavigation } from "../navigation";
 import { PageHeader } from "../layout/page-header";
+import { useT } from "../i18n";
+
+type Translator = ReturnType<typeof useT<"benchmarks">>["t"];
 
 /**
  * Map a benchmark error code to a user-facing message. The list endpoint can
@@ -27,30 +29,30 @@ import { PageHeader } from "../layout/page-header";
  * else (slug_taken, bad_body, …) is a write-side concern. We still cover the
  * full union so the type checker keeps us honest if new codes appear.
  */
-function messageForCode(code: BenchmarkErrorCode): string {
+function messageForCode(t: Translator, code: BenchmarkErrorCode): string {
   switch (code) {
     case "unauthenticated":
-      return "Please sign in.";
+      return t(($) => $.errors.unauthenticated);
     case "workspace_required":
     case "bad_workspace_id":
     case "bad_user_id":
-      return "Workspace context is missing — try reloading the page.";
+      return t(($) => $.errors.workspace_context_missing);
     case "internal_error":
-      return "The server hit an internal error. Try again in a moment.";
+      return t(($) => $.errors.internal_error);
     case "suite_not_found":
-      return "Suite not found.";
+      return t(($) => $.errors.suite_not_found);
     case "profile_not_found":
-      return "Profile not found.";
+      return t(($) => $.errors.profile_not_found);
     case "agent_not_found":
-      return "Agent not found.";
+      return t(($) => $.errors.agent_not_found);
     case "slug_taken":
-      return "That slug is already used by another suite.";
+      return t(($) => $.errors.slug_taken_suite);
     case "instance_list_empty":
-      return "Suite must include at least one task instance.";
+      return t(($) => $.errors.instance_list_empty);
     case "bad_body":
-      return "The request body was malformed.";
+      return t(($) => $.errors.bad_body);
     case "bad_id":
-      return "Invalid identifier.";
+      return t(($) => $.errors.bad_id);
   }
 }
 
@@ -62,11 +64,12 @@ function PageHeaderBar({
   createHref: string;
 }) {
   const navigation = useNavigation();
+  const { t } = useT("benchmarks");
   return (
     <PageHeader className="justify-between px-5">
       <div className="flex items-center gap-2">
         <ClipboardList className="h-4 w-4 text-muted-foreground" />
-        <h1 className="text-sm font-medium">Suites</h1>
+        <h1 className="text-sm font-medium">{t(($) => $.suites_list.page_title)}</h1>
         {totalCount > 0 && (
           <span className="font-mono text-xs tabular-nums text-muted-foreground/70">
             {totalCount}
@@ -79,7 +82,7 @@ function PageHeaderBar({
         onClick={() => navigation.push(createHref)}
       >
         <Plus className="h-3 w-3" />
-        Create suite
+        {t(($) => $.suites_list.create_cta)}
       </Button>
     </PageHeader>
   );
@@ -87,14 +90,17 @@ function PageHeaderBar({
 
 function EmptyState({ createHref }: { createHref: string }) {
   const navigation = useNavigation();
+  const { t } = useT("benchmarks");
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-6 py-16 text-center">
       <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
         <ClipboardList className="h-6 w-6 text-muted-foreground" />
       </div>
-      <h2 className="mt-4 text-base font-semibold">No suites yet</h2>
+      <h2 className="mt-4 text-base font-semibold">
+        {t(($) => $.suites_list.empty_title)}
+      </h2>
       <p className="mt-1 max-w-md text-sm text-muted-foreground">
-        Create one to define a stable benchmark task set.
+        {t(($) => $.suites_list.empty_description)}
       </p>
       <Button
         type="button"
@@ -103,7 +109,7 @@ function EmptyState({ createHref }: { createHref: string }) {
         onClick={() => navigation.push(createHref)}
       >
         <Plus className="h-3 w-3" />
-        Create suite
+        {t(($) => $.suites_list.create_cta)}
       </Button>
     </div>
   );
@@ -126,16 +132,17 @@ function LoadingState({ createHref }: { createHref: string }) {
 }
 
 function ErrorBanner({ error }: { error: unknown }) {
+  const { t } = useT("benchmarks");
   const code = extractBenchmarkErrorCode(error);
   const message = code
-    ? messageForCode(code)
+    ? messageForCode(t, code)
     : error instanceof Error
       ? error.message
-      : "Failed to load suites.";
+      : t(($) => $.errors.load_suites_failed);
   return (
     <Alert variant="destructive">
       <AlertCircle />
-      <AlertTitle>Couldn&apos;t load suites</AlertTitle>
+      <AlertTitle>{t(($) => $.suites_list.error_title)}</AlertTitle>
       <AlertDescription>{message}</AlertDescription>
     </Alert>
   );
@@ -149,6 +156,7 @@ interface SuiteRowProps {
 }
 
 function SuiteRow({ suite, onOpen, onDelete, deleting }: SuiteRowProps) {
+  const { t } = useT("benchmarks");
   return (
     <tr
       className="cursor-pointer border-t border-border/60 transition-colors hover:bg-muted/40"
@@ -170,7 +178,9 @@ function SuiteRow({ suite, onOpen, onDelete, deleting }: SuiteRowProps) {
           type="button"
           variant="ghost"
           size="icon"
-          aria-label={`Delete suite ${suite.slug}`}
+          aria-label={t(($) => $.suites_list.delete_aria, {
+            slug: suite.slug,
+          })}
           disabled={deleting}
           onClick={(e) => {
             e.stopPropagation();
@@ -188,6 +198,7 @@ export default function SuitesList() {
   const wsId = useWorkspaceId();
   const paths = useWorkspacePaths();
   const navigation = useNavigation();
+  const { t } = useT("benchmarks");
   const suiteFilter = useBenchmarksUI((s) => s.suiteFilter);
   const setSuiteFilter = useBenchmarksUI((s) => s.setSuiteFilter);
 
@@ -236,7 +247,7 @@ export default function SuitesList() {
                 <Input
                   value={suiteFilter}
                   onChange={(e) => setSuiteFilter(e.target.value)}
-                  placeholder="Filter by slug or name"
+                  placeholder={t(($) => $.suites_list.filter_placeholder)}
                   className="h-8 w-64 pl-8 text-sm"
                 />
               </div>
@@ -244,19 +255,34 @@ export default function SuitesList() {
             {filtered.length === 0 ? (
               <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 py-16 text-center text-muted-foreground">
                 <Search className="h-8 w-8 text-muted-foreground/40" />
-                <p className="text-sm">No suites match your filter.</p>
+                <p className="text-sm">
+                  {t(($) => $.suites_list.filter_no_match)}
+                </p>
               </div>
             ) : (
               <div className="flex-1 overflow-auto">
                 <table className="w-full text-left">
                   <thead className="sticky top-0 z-10 bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
                     <tr>
-                      <th className="px-4 py-2 font-medium">Slug</th>
-                      <th className="px-4 py-2 font-medium">Display name</th>
-                      <th className="px-4 py-2 font-medium">Adapter</th>
-                      <th className="px-4 py-2 font-medium">Tasks</th>
-                      <th className="px-4 py-2 font-medium">Created</th>
-                      <th className="px-4 py-2 font-medium" aria-label="Actions" />
+                      <th className="px-4 py-2 font-medium">
+                        {t(($) => $.suites_list.col_slug)}
+                      </th>
+                      <th className="px-4 py-2 font-medium">
+                        {t(($) => $.suites_list.col_display_name)}
+                      </th>
+                      <th className="px-4 py-2 font-medium">
+                        {t(($) => $.suites_list.col_adapter)}
+                      </th>
+                      <th className="px-4 py-2 font-medium">
+                        {t(($) => $.suites_list.col_tasks)}
+                      </th>
+                      <th className="px-4 py-2 font-medium">
+                        {t(($) => $.suites_list.col_created)}
+                      </th>
+                      <th
+                        className="px-4 py-2 font-medium"
+                        aria-label={t(($) => $.suites_list.actions_aria)}
+                      />
                     </tr>
                   </thead>
                   <tbody>

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
 import { paths } from "@multica/core/paths";
 import { cn } from "@multica/ui/lib/utils";
+import { useT } from "@multica/views/i18n";
 
 /**
  * Benchmarks dashboard sub-nav.
@@ -13,9 +14,10 @@ import { cn } from "@multica/ui/lib/utils";
  * tabs render as non-interactive list items rather than links so
  * keyboard navigation and screen readers correctly skip them.
  */
+type TabKey = "runs" | "suites" | "profiles" | "leaderboard";
+
 type Tab = {
-  key: "runs" | "suites" | "profiles" | "leaderboard";
-  label: string;
+  key: TabKey;
   href: string | null;
   enabled: boolean;
 };
@@ -25,18 +27,19 @@ export default function BenchmarksLayout({ children }: { children: React.ReactNo
   const params = useParams<{ workspaceSlug: string }>();
   const slug = params.workspaceSlug;
   const wsPaths = paths.workspace(slug);
+  const { t } = useT("benchmarks");
 
   const tabs: Tab[] = [
-    { key: "runs", label: "Runs", href: null, enabled: false },
-    { key: "suites", label: "Suites", href: wsPaths.benchmarkSuites(), enabled: true },
-    { key: "profiles", label: "Profiles", href: wsPaths.benchmarkProfiles(), enabled: true },
-    { key: "leaderboard", label: "Leaderboard", href: null, enabled: false },
+    { key: "runs", href: null, enabled: false },
+    { key: "suites", href: wsPaths.benchmarkSuites(), enabled: true },
+    { key: "profiles", href: wsPaths.benchmarkProfiles(), enabled: true },
+    { key: "leaderboard", href: null, enabled: false },
   ];
 
   return (
     <div className="flex h-full flex-col">
       <nav
-        aria-label="Benchmarks sections"
+        aria-label={t(($) => $.tabs.aria_label)}
         className="flex shrink-0 items-center gap-1 border-b border-border px-4"
       >
         {tabs.map((tab) => {
@@ -47,19 +50,21 @@ export default function BenchmarksLayout({ children }: { children: React.ReactNo
           const activeClass = "border-b-2 border-foreground text-foreground";
           const inactiveClass = "border-b-2 border-transparent text-muted-foreground hover:text-foreground";
 
+          const label = t(($) => $.tabs[tab.key]);
+
           if (!tab.enabled || tab.href === null) {
             return (
               <span
                 key={tab.key}
                 aria-disabled="true"
                 tabIndex={-1}
-                title="Available after Phase 1"
+                title={t(($) => $.tabs.phase1_tooltip)}
                 className={cn(
                   baseClass,
                   "border-b-2 border-transparent text-muted-foreground opacity-50 cursor-not-allowed",
                 )}
               >
-                {tab.label}
+                {label}
               </span>
             );
           }
@@ -71,7 +76,7 @@ export default function BenchmarksLayout({ children }: { children: React.ReactNo
               aria-current={isActive ? "page" : undefined}
               className={cn(baseClass, isActive ? activeClass : inactiveClass)}
             >
-              {tab.label}
+              {label}
             </Link>
           );
         })}

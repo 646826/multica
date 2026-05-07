@@ -1,4 +1,3 @@
-/* eslint-disable i18next/no-literal-string -- T22 will wrap user-facing strings in t(...) */
 "use client";
 
 import { useState, type FormEvent } from "react";
@@ -26,43 +25,46 @@ import {
 } from "@multica/ui/components/ui/native-select";
 import { useNavigation } from "../navigation";
 import { PageHeader } from "../layout/page-header";
+import { useT } from "../i18n";
+
+type Translator = ReturnType<typeof useT<"benchmarks">>["t"];
 
 /**
  * Map a benchmark error code to a user-facing message for the capture form.
  * Covers the full union so new codes are caught at compile time.
  */
-function messageForCode(code: BenchmarkErrorCode): string {
+function messageForCode(t: Translator, code: BenchmarkErrorCode): string {
   switch (code) {
     case "agent_not_found":
-      return "Agent not found in this workspace.";
+      return t(($) => $.errors.agent_not_found_in_workspace);
     case "slug_taken":
-      return "Slug already in use — pick a different one.";
+      return t(($) => $.errors.slug_taken_pick_different);
     case "instance_list_empty":
-      return "Add at least one instance id.";
+      return t(($) => $.errors.add_one_instance);
     case "bad_body":
-      return "The form data was rejected by the server.";
+      return t(($) => $.errors.bad_form_body);
     case "bad_id":
-      return "Invalid identifier.";
+      return t(($) => $.errors.bad_id);
     case "bad_user_id":
     case "bad_workspace_id":
     case "workspace_required":
-      return "Workspace context is missing — try reloading the page.";
+      return t(($) => $.errors.workspace_context_missing);
     case "unauthenticated":
-      return "Please sign in.";
+      return t(($) => $.errors.unauthenticated);
     case "internal_error":
-      return "The server hit an internal error. Try again in a moment.";
+      return t(($) => $.errors.internal_error);
     case "suite_not_found":
-      return "Suite not found.";
+      return t(($) => $.errors.suite_not_found);
     case "profile_not_found":
-      return "Profile not found.";
+      return t(($) => $.errors.profile_not_found);
   }
 }
 
-function errorMessage(err: unknown): string {
+function errorMessage(t: Translator, err: unknown): string {
   const code = extractBenchmarkErrorCode(err);
-  if (code) return messageForCode(code);
+  if (code) return messageForCode(t, code);
   if (err instanceof Error && err.message) return err.message;
-  return "Failed to capture profile.";
+  return t(($) => $.errors.capture_profile_failed);
 }
 
 export default function ProfileCapture() {
@@ -70,6 +72,7 @@ export default function ProfileCapture() {
   const paths = useWorkspacePaths();
   const navigation = useNavigation();
   const captureProfile = useCaptureBenchmarkProfile();
+  const { t } = useT("benchmarks");
 
   const profilesBase = paths.benchmarkProfiles();
 
@@ -92,15 +95,15 @@ export default function ProfileCapture() {
     const trimmedName = displayName.trim();
 
     if (!agentId) {
-      setValidationError("Pick an agent to snapshot.");
+      setValidationError(t(($) => $.profile_capture.agent_required));
       return;
     }
     if (!trimmedSlug) {
-      setValidationError("Slug is required.");
+      setValidationError(t(($) => $.profile_capture.slug_required));
       return;
     }
     if (!trimmedName) {
-      setValidationError("Display name is required.");
+      setValidationError(t(($) => $.profile_capture.name_required));
       return;
     }
 
@@ -117,7 +120,7 @@ export default function ProfileCapture() {
   };
 
   const submitError = captureProfile.error
-    ? errorMessage(captureProfile.error)
+    ? errorMessage(t, captureProfile.error)
     : null;
   const inlineError = validationError ?? submitError;
 
@@ -128,12 +131,14 @@ export default function ProfileCapture() {
           type="button"
           variant="ghost"
           size="icon"
-          aria-label="Back to profiles"
+          aria-label={t(($) => $.profile_capture.back_aria)}
           onClick={goBack}
         >
           <ArrowLeft className="h-4 w-4" />
         </Button>
-        <h1 className="text-sm font-medium">Capture profile</h1>
+        <h1 className="text-sm font-medium">
+          {t(($) => $.profile_capture.page_title)}
+        </h1>
       </PageHeader>
 
       <div className="flex flex-1 min-h-0 flex-col overflow-auto p-6">
@@ -144,13 +149,15 @@ export default function ProfileCapture() {
           {inlineError && (
             <Alert variant="destructive">
               <AlertCircle />
-              <AlertTitle>Couldn&apos;t capture profile</AlertTitle>
+              <AlertTitle>{t(($) => $.profile_capture.error_title)}</AlertTitle>
               <AlertDescription>{inlineError}</AlertDescription>
             </Alert>
           )}
 
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="profile-agent">Agent</Label>
+            <Label htmlFor="profile-agent">
+              {t(($) => $.profile_capture.agent_label)}
+            </Label>
             <NativeSelect
               id="profile-agent"
               value={agentId}
@@ -161,10 +168,10 @@ export default function ProfileCapture() {
             >
               <NativeSelectOption value="">
                 {agentsLoading
-                  ? "Loading agents…"
+                  ? t(($) => $.profile_capture.agent_loading)
                   : agents.length === 0
-                    ? "No agents in this workspace"
-                    : "Select an agent…"}
+                    ? t(($) => $.profile_capture.agent_empty)
+                    : t(($) => $.profile_capture.agent_placeholder)}
               </NativeSelectOption>
               {agents.map((agent) => (
                 <NativeSelectOption key={agent.id} value={agent.id}>
@@ -173,32 +180,35 @@ export default function ProfileCapture() {
               ))}
             </NativeSelect>
             <p className="text-xs text-muted-foreground">
-              The selected agent&apos;s prompt, model, and skills are
-              snapshotted at capture time.
+              {t(($) => $.profile_capture.agent_help)}
             </p>
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="profile-slug">Slug</Label>
+            <Label htmlFor="profile-slug">
+              {t(($) => $.profile_capture.slug_label)}
+            </Label>
             <Input
               id="profile-slug"
               value={slug}
               onChange={(e) => setSlug(e.target.value)}
-              placeholder="claude-opus-baseline"
+              placeholder={t(($) => $.profile_capture.slug_placeholder)}
               required
             />
             <p className="text-xs text-muted-foreground">
-              Stable identifier, unique within this workspace.
+              {t(($) => $.profile_capture.slug_help)}
             </p>
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="profile-name">Display name</Label>
+            <Label htmlFor="profile-name">
+              {t(($) => $.profile_capture.name_label)}
+            </Label>
             <Input
               id="profile-name"
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="Claude Opus baseline"
+              placeholder={t(($) => $.profile_capture.name_placeholder)}
               required
             />
           </div>
@@ -209,7 +219,9 @@ export default function ProfileCapture() {
               size="sm"
               disabled={captureProfile.isPending}
             >
-              {captureProfile.isPending ? "Capturing…" : "Capture profile"}
+              {captureProfile.isPending
+                ? t(($) => $.profile_capture.submit_pending)
+                : t(($) => $.profile_capture.submit)}
             </Button>
             <Button
               type="button"
@@ -218,7 +230,7 @@ export default function ProfileCapture() {
               onClick={goBack}
               disabled={captureProfile.isPending}
             >
-              Cancel
+              {t(($) => $.profile_capture.cancel)}
             </Button>
           </div>
         </form>

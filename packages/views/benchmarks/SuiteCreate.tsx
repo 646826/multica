@@ -1,4 +1,3 @@
-/* eslint-disable i18next/no-literal-string -- T22 will wrap user-facing strings in t(...) */
 "use client";
 
 import { useState, type FormEvent } from "react";
@@ -24,51 +23,55 @@ import {
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { useNavigation } from "../navigation";
 import { PageHeader } from "../layout/page-header";
+import { useT } from "../i18n";
 
 const ADAPTER_KIND = "programbench" as const;
+
+type Translator = ReturnType<typeof useT<"benchmarks">>["t"];
 
 /**
  * Map a benchmark error code to a user-facing message for the create form.
  * Covers the full union so new codes are caught at compile time.
  */
-function messageForCode(code: BenchmarkErrorCode): string {
+function messageForCode(t: Translator, code: BenchmarkErrorCode): string {
   switch (code) {
     case "slug_taken":
-      return "Slug already in use — pick a different one.";
+      return t(($) => $.errors.slug_taken_pick_different);
     case "instance_list_empty":
-      return "Add at least one instance id.";
+      return t(($) => $.errors.add_one_instance);
     case "bad_body":
-      return "The form data was rejected by the server.";
+      return t(($) => $.errors.bad_form_body);
     case "bad_id":
-      return "Invalid identifier.";
+      return t(($) => $.errors.bad_id);
     case "bad_user_id":
     case "bad_workspace_id":
     case "workspace_required":
-      return "Workspace context is missing — try reloading the page.";
+      return t(($) => $.errors.workspace_context_missing);
     case "unauthenticated":
-      return "Please sign in.";
+      return t(($) => $.errors.unauthenticated);
     case "internal_error":
-      return "The server hit an internal error. Try again in a moment.";
+      return t(($) => $.errors.internal_error);
     case "suite_not_found":
-      return "Suite not found.";
+      return t(($) => $.errors.suite_not_found);
     case "profile_not_found":
-      return "Profile not found.";
+      return t(($) => $.errors.profile_not_found);
     case "agent_not_found":
-      return "Agent not found.";
+      return t(($) => $.errors.agent_not_found);
   }
 }
 
-function errorMessage(err: unknown): string {
+function errorMessage(t: Translator, err: unknown): string {
   const code = extractBenchmarkErrorCode(err);
-  if (code) return messageForCode(code);
+  if (code) return messageForCode(t, code);
   if (err instanceof Error && err.message) return err.message;
-  return "Failed to create suite.";
+  return t(($) => $.errors.create_suite_failed);
 }
 
 export default function SuiteCreate() {
   const paths = useWorkspacePaths();
   const navigation = useNavigation();
   const createSuite = useCreateBenchmarkSuite();
+  const { t } = useT("benchmarks");
 
   const suitesBase = paths.benchmarkSuites();
 
@@ -92,15 +95,15 @@ export default function SuiteCreate() {
       .filter((line) => line.length > 0);
 
     if (!trimmedSlug) {
-      setValidationError("Slug is required.");
+      setValidationError(t(($) => $.suite_create.slug_required));
       return;
     }
     if (!trimmedName) {
-      setValidationError("Display name is required.");
+      setValidationError(t(($) => $.suite_create.name_required));
       return;
     }
     if (instanceIds.length === 0) {
-      setValidationError("Add at least one instance id.");
+      setValidationError(t(($) => $.errors.add_one_instance));
       return;
     }
 
@@ -121,7 +124,7 @@ export default function SuiteCreate() {
   };
 
   const submitError = createSuite.error
-    ? errorMessage(createSuite.error)
+    ? errorMessage(t, createSuite.error)
     : null;
   const inlineError = validationError ?? submitError;
 
@@ -132,12 +135,14 @@ export default function SuiteCreate() {
           type="button"
           variant="ghost"
           size="icon"
-          aria-label="Back to suites"
+          aria-label={t(($) => $.suite_create.back_aria)}
           onClick={goBack}
         >
           <ArrowLeft className="h-4 w-4" />
         </Button>
-        <h1 className="text-sm font-medium">Create suite</h1>
+        <h1 className="text-sm font-medium">
+          {t(($) => $.suite_create.page_title)}
+        </h1>
       </PageHeader>
 
       <div className="flex flex-1 min-h-0 flex-col overflow-auto p-6">
@@ -148,39 +153,45 @@ export default function SuiteCreate() {
           {inlineError && (
             <Alert variant="destructive">
               <AlertCircle />
-              <AlertTitle>Couldn&apos;t create suite</AlertTitle>
+              <AlertTitle>{t(($) => $.suite_create.error_title)}</AlertTitle>
               <AlertDescription>{inlineError}</AlertDescription>
             </Alert>
           )}
 
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="suite-slug">Slug</Label>
+            <Label htmlFor="suite-slug">
+              {t(($) => $.suite_create.slug_label)}
+            </Label>
             <Input
               id="suite-slug"
               value={slug}
               onChange={(e) => setSlug(e.target.value)}
-              placeholder="programbench-mini"
+              placeholder={t(($) => $.suite_create.slug_placeholder)}
               required
               autoFocus
             />
             <p className="text-xs text-muted-foreground">
-              Stable identifier, unique within this workspace.
+              {t(($) => $.suite_create.slug_help)}
             </p>
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="suite-name">Display name</Label>
+            <Label htmlFor="suite-name">
+              {t(($) => $.suite_create.name_label)}
+            </Label>
             <Input
               id="suite-name"
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="ProgramBench Mini"
+              placeholder={t(($) => $.suite_create.name_placeholder)}
               required
             />
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="suite-adapter">Adapter</Label>
+            <Label htmlFor="suite-adapter">
+              {t(($) => $.suite_create.adapter_label)}
+            </Label>
             <NativeSelect
               id="suite-adapter"
               value={ADAPTER_KIND}
@@ -190,37 +201,41 @@ export default function SuiteCreate() {
               className="w-64"
             >
               <NativeSelectOption value={ADAPTER_KIND}>
-                programbench
+                {ADAPTER_KIND}
               </NativeSelectOption>
             </NativeSelect>
             <p className="text-xs text-muted-foreground">
-              Only ProgramBench is supported in v1.
+              {t(($) => $.suite_create.adapter_help)}
             </p>
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="suite-instances">Instance ids</Label>
+            <Label htmlFor="suite-instances">
+              {t(($) => $.suite_create.instances_label)}
+            </Label>
             <Textarea
               id="suite-instances"
               value={instanceIdsText}
               onChange={(e) => setInstanceIdsText(e.target.value)}
-              placeholder={"abishekvashok__cmatrix.5c082c6\nfoo__bar.deadbee"}
+              placeholder={t(($) => $.suite_create.instances_placeholder)}
               rows={6}
               required
               className="font-mono text-xs"
             />
             <p className="text-xs text-muted-foreground">
-              One instance id per line, e.g. abishekvashok__cmatrix.5c082c6.
+              {t(($) => $.suite_create.instances_help)}
             </p>
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="suite-description">Description</Label>
+            <Label htmlFor="suite-description">
+              {t(($) => $.suite_create.description_label)}
+            </Label>
             <Textarea
               id="suite-description"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="Optional notes about this suite."
+              placeholder={t(($) => $.suite_create.description_placeholder)}
               rows={3}
             />
           </div>
@@ -231,7 +246,9 @@ export default function SuiteCreate() {
               size="sm"
               disabled={createSuite.isPending}
             >
-              {createSuite.isPending ? "Creating…" : "Create suite"}
+              {createSuite.isPending
+                ? t(($) => $.suite_create.submit_pending)
+                : t(($) => $.suite_create.submit)}
             </Button>
             <Button
               type="button"
@@ -240,7 +257,7 @@ export default function SuiteCreate() {
               onClick={goBack}
               disabled={createSuite.isPending}
             >
-              Cancel
+              {t(($) => $.suite_create.cancel)}
             </Button>
           </div>
         </form>
