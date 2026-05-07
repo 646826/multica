@@ -234,11 +234,14 @@ func (s *ProfileService) findDuplicate(ctx context.Context, workspaceID pgtype.U
 
 func decodeSkills(raw []byte) ([]SkillRef, error) {
 	if len(raw) == 0 {
-		return nil, nil
+		return []SkillRef{}, nil
 	}
 	var out []SkillRef
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, err
+	}
+	if out == nil {
+		out = []SkillRef{}
 	}
 	return out, nil
 }

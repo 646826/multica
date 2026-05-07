@@ -147,6 +147,32 @@ func TestProfileService_Delete_RemovesAndIsIdempotent(t *testing.T) {
 	require.ErrorIs(t, s.Delete(ctx, created.ID, tx.WorkspaceID), benchmark.ErrProfileNotFound)
 }
 
+func TestProfileService_Capture_EmptySkillsRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	tx := newFixtureWorkspace(t)
+	agentID := newFixtureAgent(t, tx, agentSpec{Name: "NoSkills", Model: "m", PromptSource: "p"})
+	s := benchmark.NewProfileService(testQueries)
+
+	captured, err := s.Capture(ctx, benchmark.CaptureProfileInput{
+		WorkspaceID: tx.WorkspaceID, AgentID: agentID, Slug: "empty-skills",
+		DisplayName: "Empty Skills", CapturedBy: tx.UserID,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, captured.AttachedSkills, "Capture must return non-nil empty slice, not nil")
+	require.Empty(t, captured.AttachedSkills)
+
+	got, err := s.Get(ctx, captured.ID, tx.WorkspaceID)
+	require.NoError(t, err)
+	require.NotNil(t, got.AttachedSkills, "Get must return non-nil empty slice, not nil")
+	require.Empty(t, got.AttachedSkills)
+
+	listed, err := s.List(ctx, tx.WorkspaceID)
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	require.NotNil(t, listed[0].AttachedSkills, "List must return non-nil empty slice, not nil")
+	require.Empty(t, listed[0].AttachedSkills)
+}
+
 // newRandomUUID returns a random valid pgtype.UUID. Used to feed the service
 // "this id does not exist" without inserting anything.
 func newRandomUUID(t *testing.T) pgtype.UUID {
