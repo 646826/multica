@@ -51,6 +51,7 @@ export type {
   CaptureProfileRequest,
   ListBenchmarkSuitesResponse,
   ListBenchmarkProfilesResponse,
+  BenchmarkErrorCode,
 } from "./benchmark";
 export type {
   TimelineEntry,

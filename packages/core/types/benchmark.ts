@@ -79,3 +79,24 @@ export interface ListBenchmarkSuitesResponse {
 export interface ListBenchmarkProfilesResponse {
   items: BenchmarkProfile[];
 }
+
+/**
+ * Machine-readable error codes returned in the JSON body of failed
+ * `/api/benchmarks/*` responses (see the comment block above the handler
+ * methods in `packages/core/api/client.ts`). UI views map these to
+ * user-facing strings; the union exists so a missing case is a type error
+ * rather than a silent fall-through.
+ */
+export type BenchmarkErrorCode =
+  | "instance_list_empty"
+  | "bad_body"
+  | "bad_id"
+  | "bad_user_id"
+  | "bad_workspace_id"
+  | "workspace_required"
+  | "agent_not_found"
+  | "unauthenticated"
+  | "suite_not_found"
+  | "profile_not_found"
+  | "slug_taken"
+  | "internal_error";
