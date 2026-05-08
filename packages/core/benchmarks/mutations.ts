@@ -3,9 +3,12 @@ import { api } from "../api";
 import { useWorkspaceId } from "../hooks";
 import { benchmarkKeys } from "./queries";
 import type {
+  BenchmarkRun,
   CaptureProfileRequest,
   CreateReplaySuiteRequest,
   CreateSuiteRequest,
+  ListBenchmarkProfilesResponse,
+  ListBenchmarkSuitesResponse,
   StartRunRequest,
 } from "../types";
 
@@ -25,8 +28,25 @@ export function useDeleteBenchmarkSuite() {
   const wsId = useWorkspaceId();
   return useMutation({
     mutationFn: (id: string) => api.deleteBenchmarkSuite(id),
-    onSuccess: (_data, id) => {
-      qc.invalidateQueries({ queryKey: benchmarkKeys.suites(wsId) });
+    onMutate: async (id) => {
+      await qc.cancelQueries({ queryKey: benchmarkKeys.suites(wsId) });
+      const prev = qc.getQueryData<ListBenchmarkSuitesResponse>(
+        benchmarkKeys.suites(wsId),
+      );
+      qc.setQueryData<ListBenchmarkSuitesResponse>(
+        benchmarkKeys.suites(wsId),
+        (old) =>
+          old ? { ...old, items: old.items.filter((s) => s.id !== id) } : old,
+      );
+      return { prev };
+    },
+    onError: (_err, _id, ctx) => {
+      if (ctx?.prev !== undefined) {
+        qc.setQueryData(benchmarkKeys.suites(wsId), ctx.prev);
+      }
+    },
+    onSettled: (_data, _err, id) => {
+      void qc.invalidateQueries({ queryKey: benchmarkKeys.suites(wsId) });
       // Drop the per-detail cache so a follow-up navigation doesn't briefly
       // render a stale suite before the 404 lands.
       qc.removeQueries({ queryKey: benchmarkKeys.suite(wsId, id) });
@@ -66,8 +86,25 @@ export function useDeleteBenchmarkProfile() {
   const wsId = useWorkspaceId();
   return useMutation({
     mutationFn: (id: string) => api.deleteBenchmarkProfile(id),
-    onSuccess: (_data, id) => {
-      qc.invalidateQueries({ queryKey: benchmarkKeys.profiles(wsId) });
+    onMutate: async (id) => {
+      await qc.cancelQueries({ queryKey: benchmarkKeys.profiles(wsId) });
+      const prev = qc.getQueryData<ListBenchmarkProfilesResponse>(
+        benchmarkKeys.profiles(wsId),
+      );
+      qc.setQueryData<ListBenchmarkProfilesResponse>(
+        benchmarkKeys.profiles(wsId),
+        (old) =>
+          old ? { ...old, items: old.items.filter((p) => p.id !== id) } : old,
+      );
+      return { prev };
+    },
+    onError: (_err, _id, ctx) => {
+      if (ctx?.prev !== undefined) {
+        qc.setQueryData(benchmarkKeys.profiles(wsId), ctx.prev);
+      }
+    },
+    onSettled: (_data, _err, id) => {
+      void qc.invalidateQueries({ queryKey: benchmarkKeys.profiles(wsId) });
       qc.removeQueries({ queryKey: benchmarkKeys.profile(wsId, id) });
     },
   });
@@ -112,7 +149,37 @@ export function useCancelBenchmarkRun() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.cancelBenchmarkRun(id),
-    onSuccess: (_, id) => {
+    onMutate: async (id) => {
+      await qc.cancelQueries({ queryKey: benchmarkKeys.runs(wsId) });
+      await qc.cancelQueries({ queryKey: benchmarkKeys.run(wsId, id) });
+      const prevList = qc.getQueryData<BenchmarkRun[]>(
+        benchmarkKeys.runs(wsId),
+      );
+      const prevDetail = qc.getQueryData<BenchmarkRun>(
+        benchmarkKeys.run(wsId, id),
+      );
+      qc.setQueryData<BenchmarkRun[]>(benchmarkKeys.runs(wsId), (old) =>
+        old?.map((r) =>
+          r.id === id ? { ...r, status: "canceled" as const } : r,
+        ),
+      );
+      if (prevDetail) {
+        qc.setQueryData<BenchmarkRun>(benchmarkKeys.run(wsId, id), {
+          ...prevDetail,
+          status: "canceled",
+        });
+      }
+      return { prevList, prevDetail };
+    },
+    onError: (_err, id, ctx) => {
+      if (ctx?.prevList !== undefined) {
+        qc.setQueryData(benchmarkKeys.runs(wsId), ctx.prevList);
+      }
+      if (ctx?.prevDetail !== undefined) {
+        qc.setQueryData(benchmarkKeys.run(wsId, id), ctx.prevDetail);
+      }
+    },
+    onSettled: (_data, _err, id) => {
       void qc.invalidateQueries({ queryKey: benchmarkKeys.runs(wsId) });
       void qc.invalidateQueries({ queryKey: benchmarkKeys.run(wsId, id) });
     },
