@@ -24,6 +24,9 @@ describe("paths.workspace(slug)", () => {
     expect(ws.benchmarkRuns()).toBe("/acme/benchmarks/runs");
     expect(ws.benchmarkRunDetail("run_1")).toBe("/acme/benchmarks/runs/run_1");
     expect(ws.benchmarkRunNew()).toBe("/acme/benchmarks/runs/new");
+    expect(ws.benchmarkRunCompare("run_1", "run_2")).toBe(
+      "/acme/benchmarks/runs/run_1/compare/run_2",
+    );
   });
 
   it("URL-encodes special characters in ids", () => {

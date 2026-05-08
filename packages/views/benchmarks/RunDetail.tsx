@@ -4,6 +4,7 @@ import { AlertCircle, ArrowLeft } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import {
   benchmarkRunDetailOptions,
+  benchmarkRunListOptions,
   extractBenchmarkErrorCode,
   useCancelBenchmarkRun,
 } from "@multica/core/benchmarks";
@@ -17,6 +18,11 @@ import {
 } from "@multica/ui/components/ui/alert";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
+import { Label } from "@multica/ui/components/ui/label";
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from "@multica/ui/components/ui/native-select";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { useNavigation, AppLink } from "../navigation";
 import { PageHeader } from "../layout/page-header";
@@ -220,6 +226,61 @@ function Metadata({
   );
 }
 
+/**
+ * "Compare with…" picker: lists other completed runs of the same suite,
+ * excluding the current run. Navigates to the compare route on selection.
+ * Hidden when there are no eligible candidates so the empty native select
+ * doesn't sit dead on the page.
+ */
+function ComparePicker({ run }: { run: BenchmarkRun }) {
+  const wsId = useWorkspaceId();
+  const paths = useWorkspacePaths();
+  const navigation = useNavigation();
+  const { t } = useT("benchmarks");
+
+  const { data: runs = [] } = useQuery(benchmarkRunListOptions(wsId));
+
+  const candidates = runs.filter(
+    (r) =>
+      r.id !== run.id &&
+      r.status === "complete" &&
+      r.suite_id === run.suite_id,
+  );
+
+  if (candidates.length === 0) return null;
+
+  const selectId = `compare-with-${run.id}`;
+
+  return (
+    <section className="rounded-lg border bg-background p-4">
+      <Label htmlFor={selectId} className="text-sm font-medium">
+        {t(($) => $.run_detail.compare_with)}
+      </Label>
+      <p className="mb-2 text-xs text-muted-foreground">
+        {t(($) => $.run_detail.compare_with_help)}
+      </p>
+      <NativeSelect
+        id={selectId}
+        value=""
+        onChange={(e) => {
+          const baseId = e.target.value;
+          if (!baseId) return;
+          navigation.push(paths.benchmarkRunCompare(run.id, baseId));
+        }}
+      >
+        <NativeSelectOption value="">
+          {t(($) => $.run_detail.compare_with_placeholder)}
+        </NativeSelectOption>
+        {candidates.map((r) => (
+          <NativeSelectOption key={r.id} value={r.id}>
+            {r.display_name}
+          </NativeSelectOption>
+        ))}
+      </NativeSelect>
+    </section>
+  );
+}
+
 export default function RunDetail({ runId }: { runId: string }) {
   const wsId = useWorkspaceId();
   const paths = useWorkspacePaths();
@@ -318,6 +379,8 @@ export default function RunDetail({ runId }: { runId: string }) {
         </div>
 
         <Metadata run={run} baseRunHref={baseRunHref} />
+
+        <ComparePicker run={run} />
 
         {notes && (
           <section>
