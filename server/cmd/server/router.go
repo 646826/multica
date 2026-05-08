@@ -135,12 +135,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	benchmarkTaskDispatcher := benchmarkservice.NewTaskDispatcher(queries, pool, benchmarkRegistry, bus, h.TaskService)
 	benchmarkTimeoutWatchdog := benchmarkservice.NewTimeoutWatchdog(queries, bus)
 	benchmarkFinalizer := benchmarkservice.NewRunFinalizer(queries, pool, bus)
+	benchmarkEvaluatorPool := benchmarkservice.NewEvaluatorPoolService(queries)
+	benchmarkEvalJobs := benchmarkservice.NewEvalJobService(queries, pool, bus)
 
 	benchmarkHandler := handler.NewBenchmarkHandler(handler.BenchmarkDeps{
-		Suites:   benchmarkSuites,
-		Profiles: benchmarkProfiles,
-		Runs:     benchmarkRuns,
+		Suites:        benchmarkSuites,
+		Profiles:      benchmarkProfiles,
+		Runs:          benchmarkRuns,
+		EvaluatorPool: benchmarkEvaluatorPool,
 	})
+	evalJobsHandler := handler.NewEvalJobsHandler(benchmarkEvalJobs)
 
 	// Start dispatcher goroutines when a lifecycle context is provided.
 	// Tests that only need HTTP routing leave BenchmarkCtx nil; main.go
@@ -286,6 +290,17 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 		r.Post("/runtimes/{runtimeId}/recover-orphans", h.RecoverOrphanedTasks)
 		r.Post("/tasks/{taskId}/session", h.PinTaskSession)
+	})
+
+	// Internal eval-job API for the Evaluator pool. Authenticated by a
+	// workspace-scoped evaluator-pool token (mul_evp_), NOT a user session
+	// or daemon token — kept at the top level so the standard Auth/
+	// RequireWorkspaceMember middlewares don't run.
+	r.Route("/api/internal/eval-jobs", func(r chi.Router) {
+		r.Use(middleware.RequireEvaluatorPoolAuth(benchmarkEvaluatorPool))
+		r.Post("/claim", evalJobsHandler.Claim)
+		r.Post("/{id}/complete", evalJobsHandler.Complete)
+		r.Post("/{id}/fail", evalJobsHandler.Fail)
 	})
 
 	// Protected API routes
@@ -496,6 +511,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 						r.Post("/cancel", benchmarkHandler.CancelRun)
 						r.Post("/eval-results/{instance_id}", benchmarkHandler.ImportEvalResult)
 					})
+				})
+				r.Route("/evaluator-tokens", func(r chi.Router) {
+					r.Get("/", benchmarkHandler.ListEvaluatorTokens)
+					r.Post("/", benchmarkHandler.CreateEvaluatorToken)
+					r.Delete("/{id}", benchmarkHandler.RevokeEvaluatorToken)
 				})
 			})
 
