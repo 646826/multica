@@ -88,6 +88,9 @@ import type {
   CaptureProfileRequest,
   ListBenchmarkSuitesResponse,
   ListBenchmarkProfilesResponse,
+  BenchmarkRun,
+  StartRunRequest,
+  ListBenchmarkRunsResponse,
 } from "../types";
 import type { OnboardingCompletionPath } from "../onboarding/types";
 import { type Logger, noopLogger } from "../logger";
@@ -1319,5 +1322,24 @@ export class ApiClient {
 
   async deleteBenchmarkProfile(id: string): Promise<void> {
     await this.fetch(`/api/benchmarks/profiles/${id}`, { method: "DELETE" });
+  }
+
+  async listBenchmarkRuns(limit = 50): Promise<ListBenchmarkRunsResponse> {
+    return this.fetch(`/api/benchmarks/runs?limit=${limit}`);
+  }
+
+  async getBenchmarkRun(id: string): Promise<BenchmarkRun> {
+    return this.fetch(`/api/benchmarks/runs/${id}`);
+  }
+
+  async startBenchmarkRun(input: StartRunRequest): Promise<BenchmarkRun> {
+    return this.fetch(`/api/benchmarks/runs`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  async cancelBenchmarkRun(id: string): Promise<void> {
+    await this.fetch(`/api/benchmarks/runs/${id}/cancel`, { method: "POST" });
   }
 }

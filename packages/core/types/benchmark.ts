@@ -81,6 +81,58 @@ export interface ListBenchmarkProfilesResponse {
 }
 
 /**
+ * Lifecycle of a benchmark run. Mirrors the Go-side state machine; the
+ * frontend treats these as opaque labels and renders them via a status map.
+ */
+export type RunStatus =
+  | "queued"
+  | "submitting"
+  | "evaluating"
+  | "complete"
+  | "failed"
+  | "canceled";
+
+/**
+ * A single benchmark execution: pins a suite + profile pair, captures the
+ * concrete `suite_instance_ids` at start time, and tracks lifecycle state.
+ *
+ * `base_run_id` is set when this run was started as a re-run of an earlier
+ * one. `evaluator_mode` distinguishes managed (server-driven) vs. imported
+ * (results uploaded externally) flows.
+ */
+export interface BenchmarkRun {
+  id: string;
+  workspace_id: string;
+  suite_id: string;
+  suite_instance_ids: string[];
+  profile_id: string;
+  base_run_id?: string;
+  display_name: string;
+  status: RunStatus;
+  status_reason: string;
+  notes: string;
+  evaluator_mode: "managed" | "imported";
+  adapter_version: string;
+  submission_timeout_seconds: number;
+  created_by: string;
+}
+
+/** Inbound payload for `POST /api/benchmarks/runs`. */
+export interface StartRunRequest {
+  suite_id: string;
+  profile_id: string;
+  base_run_id?: string;
+  display_name: string;
+  notes?: string;
+  evaluator_mode: "managed" | "imported";
+  adapter_version?: string;
+}
+
+export interface ListBenchmarkRunsResponse {
+  items: BenchmarkRun[];
+}
+
+/**
  * Machine-readable error codes returned in the JSON body of failed
  * `/api/benchmarks/*` responses (see the comment block above the handler
  * methods in `packages/core/api/client.ts`). UI views map these to

@@ -52,6 +52,10 @@ export type {
   ListBenchmarkSuitesResponse,
   ListBenchmarkProfilesResponse,
   BenchmarkErrorCode,
+  RunStatus,
+  BenchmarkRun,
+  StartRunRequest,
+  ListBenchmarkRunsResponse,
 } from "./benchmark";
 export type {
   TimelineEntry,
