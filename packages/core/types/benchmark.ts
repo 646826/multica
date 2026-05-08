@@ -327,4 +327,5 @@ export type BenchmarkErrorCode =
   | "evaluator_id_required"
   | "adapter_kinds_required"
   | "eval_job_not_found"
-  | "adapter_unknown";
+  | "adapter_unknown"
+  | "summary_not_available";

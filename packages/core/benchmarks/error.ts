@@ -21,6 +21,7 @@ const BENCHMARK_ERROR_CODES: ReadonlySet<BenchmarkErrorCode> = new Set([
   "evaluator_id_required",
   "adapter_kinds_required",
   "eval_job_not_found",
+  "summary_not_available",
 ]);
 
 /**
