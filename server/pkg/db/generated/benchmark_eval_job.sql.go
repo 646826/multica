@@ -14,25 +14,33 @@ import (
 const claimBenchmarkEvalJobs = `-- name: ClaimBenchmarkEvalJobs :many
 WITH claimed AS (
     SELECT id FROM benchmark_eval_job
-    WHERE state = 'pending' AND adapter_kind = ANY($1::text[])
+    WHERE state = 'pending'
+      AND benchmark_eval_job.workspace_id = $1
+      AND adapter_kind = ANY($2::text[])
     ORDER BY enqueued_at ASC
-    LIMIT $2
+    LIMIT $3
     FOR UPDATE SKIP LOCKED
 )
 UPDATE benchmark_eval_job
-SET state = 'claimed', claimed_by = $3, claimed_at = now()
+SET state = 'claimed', claimed_by = $4, claimed_at = now()
 WHERE id IN (SELECT id FROM claimed)
 RETURNING id, task_id, workspace_id, adapter_kind, state, attempt, claimed_by, claimed_at, enqueued_at, finished_at, last_error
 `
 
 type ClaimBenchmarkEvalJobsParams struct {
-	Column1   []string    `json:"column_1"`
-	Limit     int32       `json:"limit"`
-	ClaimedBy pgtype.Text `json:"claimed_by"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Column2     []string    `json:"column_2"`
+	Limit       int32       `json:"limit"`
+	ClaimedBy   pgtype.Text `json:"claimed_by"`
 }
 
 func (q *Queries) ClaimBenchmarkEvalJobs(ctx context.Context, arg ClaimBenchmarkEvalJobsParams) ([]BenchmarkEvalJob, error) {
-	rows, err := q.db.Query(ctx, claimBenchmarkEvalJobs, arg.Column1, arg.Limit, arg.ClaimedBy)
+	rows, err := q.db.Query(ctx, claimBenchmarkEvalJobs,
+		arg.WorkspaceID,
+		arg.Column2,
+		arg.Limit,
+		arg.ClaimedBy,
+	)
 	if err != nil {
 		return nil, err
 	}

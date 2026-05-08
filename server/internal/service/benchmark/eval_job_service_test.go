@@ -81,7 +81,7 @@ func TestEvalJobService_Claim_PicksPendingJobs(t *testing.T) {
 	_, j1 := makeTaskAndJob(t, f, "alpha__one.aaa", "programbench")
 	_, j2 := makeTaskAndJob(t, f, "beta__two.bbb", "programbench")
 
-	got, err := f.Service.Claim(ctx, "evaluator-A", []string{"programbench"}, 5)
+	got, err := f.Service.Claim(ctx, f.WS.WorkspaceID, "evaluator-A", []string{"programbench"}, 5)
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 
@@ -115,7 +115,7 @@ func TestEvalJobService_Claim_RespectsLimit(t *testing.T) {
 	_, j2 := makeTaskAndJob(t, f, "beta__two.bbb", "programbench")
 	_, j3 := makeTaskAndJob(t, f, "gamma__three.ccc", "programbench")
 
-	got, err := f.Service.Claim(ctx, "evaluator-A", []string{"programbench"}, 1)
+	got, err := f.Service.Claim(ctx, f.WS.WorkspaceID, "evaluator-A", []string{"programbench"}, 1)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 
@@ -145,7 +145,7 @@ func TestEvalJobService_Claim_FiltersByAdapterKind(t *testing.T) {
 	_, _ = makeTaskAndJob(t, f, "alpha__one.aaa", "programbench")
 	_, otherJob := makeTaskAndJob(t, f, "beta__two.bbb", "swebench")
 
-	got, err := f.Service.Claim(ctx, "evaluator-A", []string{"programbench"}, 5)
+	got, err := f.Service.Claim(ctx, f.WS.WorkspaceID, "evaluator-A", []string{"programbench"}, 5)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	require.Equal(t, "programbench", got[0].AdapterKind)
@@ -156,15 +156,49 @@ func TestEvalJobService_Claim_FiltersByAdapterKind(t *testing.T) {
 	require.Equal(t, "pending", row.State)
 }
 
+// TestEvalJobService_Claim_DoesNotCrossWorkspaces verifies the
+// workspace_id filter on the claim query: a Claim issued for
+// workspace A must never pick up a pending eval_job belonging to
+// workspace B, even when both jobs share the same adapter_kind.
+// This is the regression test for the multi-tenancy isolation
+// promise documented on EvalJobService.Claim.
+func TestEvalJobService_Claim_DoesNotCrossWorkspaces(t *testing.T) {
+	ctx := context.Background()
+	fA := newEvalJobFixture(t)
+	fB := newEvalJobFixture(t)
+
+	// Each workspace gets one pending eval_job for the same adapter_kind.
+	_, jobA := makeTaskAndJob(t, fA, "alpha__one.aaa", "programbench")
+	_, jobB := makeTaskAndJob(t, fB, "beta__two.bbb", "programbench")
+
+	// Claim from workspace A — must return only jobA.
+	got, err := fA.Service.Claim(ctx, fA.WS.WorkspaceID, "evaluator-A", []string{"programbench"}, 5)
+	require.NoError(t, err)
+	require.Len(t, got, 1, "claim from ws A must not see ws B's job")
+	require.Equal(t, jobA.ID.Bytes, got[0].JobID.Bytes)
+
+	// Workspace B's job remains untouched (still pending).
+	rowB, err := testQueries.GetBenchmarkEvalJob(ctx, jobB.ID)
+	require.NoError(t, err)
+	require.Equal(t, "pending", rowB.State)
+	require.False(t, rowB.ClaimedBy.Valid)
+
+	// And a claim from workspace B can still pick up its own job.
+	gotB, err := fB.Service.Claim(ctx, fB.WS.WorkspaceID, "evaluator-B", []string{"programbench"}, 5)
+	require.NoError(t, err)
+	require.Len(t, gotB, 1)
+	require.Equal(t, jobB.ID.Bytes, gotB[0].JobID.Bytes)
+}
+
 func TestEvalJobService_Claim_NoWorkInputs(t *testing.T) {
 	ctx := context.Background()
 	f := newEvalJobFixture(t)
 
-	got, err := f.Service.Claim(ctx, "evaluator-A", nil, 5)
+	got, err := f.Service.Claim(ctx, f.WS.WorkspaceID, "evaluator-A", nil, 5)
 	require.NoError(t, err)
 	require.Nil(t, got)
 
-	got, err = f.Service.Claim(ctx, "evaluator-A", []string{"programbench"}, 0)
+	got, err = f.Service.Claim(ctx, f.WS.WorkspaceID, "evaluator-A", []string{"programbench"}, 0)
 	require.NoError(t, err)
 	require.Nil(t, got)
 }
@@ -175,7 +209,7 @@ func TestEvalJobService_Complete_AdvancesTaskAndCreatesResult(t *testing.T) {
 
 	task, _ := makeTaskAndJob(t, f, "alpha__one.aaa", "programbench")
 
-	claimed, err := f.Service.Claim(ctx, "evaluator-A", []string{"programbench"}, 5)
+	claimed, err := f.Service.Claim(ctx, f.WS.WorkspaceID, "evaluator-A", []string{"programbench"}, 5)
 	require.NoError(t, err)
 	require.Len(t, claimed, 1)
 
@@ -249,7 +283,7 @@ func TestEvalJobService_Fail_RetriesUntilMaxAttempts(t *testing.T) {
 		// Re-claim each round so the job is in 'claimed' state when we fail it.
 		// (Not strictly required by the SQL, but mirrors the real evaluator
 		// loop where Fail follows a successful Claim.)
-		_, err := f.Service.Claim(ctx, "evaluator-A", []string{"programbench"}, 5)
+		_, err := f.Service.Claim(ctx, f.WS.WorkspaceID, "evaluator-A", []string{"programbench"}, 5)
 		require.NoError(t, err)
 
 		require.NoError(t, f.Service.Fail(ctx, job.ID, "boom"))
@@ -282,7 +316,7 @@ func TestEvalJobService_Fail_TransientReturnsToPending(t *testing.T) {
 
 	_, job := makeTaskAndJob(t, f, "alpha__one.aaa", "programbench")
 
-	_, err := f.Service.Claim(ctx, "evaluator-A", []string{"programbench"}, 5)
+	_, err := f.Service.Claim(ctx, f.WS.WorkspaceID, "evaluator-A", []string{"programbench"}, 5)
 	require.NoError(t, err)
 
 	require.NoError(t, f.Service.Fail(ctx, job.ID, "transient"))

@@ -79,25 +79,28 @@ func NewEvalJobService(q *db.Queries, pool *pgxpool.Pool, bus Publisher) *EvalJo
 	return &EvalJobService{q: q, pool: pool, bus: bus}
 }
 
-// Claim atomically picks up to max pending eval_jobs whose adapter_kind
-// matches one of adapterKinds, marks them 'claimed' by evaluatorID,
-// and returns the data the evaluator needs to start scoring. The
-// underlying SQL uses FOR UPDATE SKIP LOCKED so concurrent claimers
-// never see the same row. A zero or negative max — or an empty
-// adapterKinds list — is treated as "no work" and returns nil without
-// touching the database.
+// Claim atomically picks up to max pending eval_jobs in workspaceID
+// whose adapter_kind matches one of adapterKinds, marks them 'claimed'
+// by evaluatorID, and returns the data the evaluator needs to start
+// scoring. The underlying SQL uses FOR UPDATE SKIP LOCKED so concurrent
+// claimers never see the same row, and the workspace_id filter is
+// enforced server-side so an evaluator-pool token can never pick up
+// jobs belonging to a different workspace. A zero or negative max — or
+// an empty adapterKinds list — is treated as "no work" and returns nil
+// without touching the database.
 //
 // If the eval_job's task row has gone missing (defensive — referential
 // integrity should prevent this), the job is marked failed and skipped
 // rather than returned to the caller with garbage fields.
-func (s *EvalJobService) Claim(ctx context.Context, evaluatorID string, adapterKinds []string, max int32) ([]ClaimedJob, error) {
+func (s *EvalJobService) Claim(ctx context.Context, workspaceID pgtype.UUID, evaluatorID string, adapterKinds []string, max int32) ([]ClaimedJob, error) {
 	if max <= 0 || len(adapterKinds) == 0 {
 		return nil, nil
 	}
 	rows, err := s.q.ClaimBenchmarkEvalJobs(ctx, db.ClaimBenchmarkEvalJobsParams{
-		Column1:   adapterKinds,
-		Limit:     max,
-		ClaimedBy: pgtype.Text{String: evaluatorID, Valid: true},
+		WorkspaceID: workspaceID,
+		Column2:     adapterKinds,
+		Limit:       max,
+		ClaimedBy:   pgtype.Text{String: evaluatorID, Valid: true},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("claim jobs: %w", err)

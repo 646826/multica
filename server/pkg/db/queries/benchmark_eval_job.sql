@@ -7,13 +7,15 @@ RETURNING *;
 -- name: ClaimBenchmarkEvalJobs :many
 WITH claimed AS (
     SELECT id FROM benchmark_eval_job
-    WHERE state = 'pending' AND adapter_kind = ANY($1::text[])
+    WHERE state = 'pending'
+      AND benchmark_eval_job.workspace_id = $1
+      AND adapter_kind = ANY($2::text[])
     ORDER BY enqueued_at ASC
-    LIMIT $2
+    LIMIT $3
     FOR UPDATE SKIP LOCKED
 )
 UPDATE benchmark_eval_job
-SET state = 'claimed', claimed_by = $3, claimed_at = now()
+SET state = 'claimed', claimed_by = $4, claimed_at = now()
 WHERE id IN (SELECT id FROM claimed)
 RETURNING *;
 

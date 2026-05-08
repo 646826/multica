@@ -69,12 +69,11 @@ type claimedJobResponse struct {
 // present in context — we still defensively check, since a misconfigured
 // router could otherwise leak jobs to anonymous callers.
 //
-// TODO(phase-1b-cleanup): EvalJobService.Claim does not yet filter by
-// the token's workspace_id. In a single-workspace deployment this is
-// safe (every token can only see its own workspace's jobs), but as
-// soon as a second workspace mints tokens we MUST plumb the
-// workspaceID through to the service so jobs cannot cross-leak. See
-// the T05 plan for the migration path.
+// The token's workspace_id is plumbed through to the service so the
+// underlying SQL filter restricts pickup to that workspace's pending
+// jobs — an evaluator-pool token bound to workspace A can never claim
+// a job belonging to workspace B, even if both were enqueued for the
+// same adapter_kind.
 func (h *EvalJobsHandler) Claim(w http.ResponseWriter, r *http.Request) {
 	tok, ok := middleware.EvaluatorTokenFromContext(r.Context())
 	if !ok {
@@ -102,7 +101,7 @@ func (h *EvalJobsHandler) Claim(w http.ResponseWriter, r *http.Request) {
 	if req.MaxConcurrent <= 0 || req.MaxConcurrent > 50 {
 		req.MaxConcurrent = 5
 	}
-	jobs, err := h.svc.Claim(r.Context(), req.EvaluatorID, req.AdapterKinds, req.MaxConcurrent)
+	jobs, err := h.svc.Claim(r.Context(), tok.WorkspaceID, req.EvaluatorID, req.AdapterKinds, req.MaxConcurrent)
 	if err != nil {
 		slog.Warn("eval_jobs.claim_failed", "err", err, "evaluator_id", req.EvaluatorID)
 		writeError(w, http.StatusInternalServerError, errInternal)
@@ -120,8 +119,6 @@ func (h *EvalJobsHandler) Claim(w http.ResponseWriter, r *http.Request) {
 			SubmissionDownloadURL: j.SubmissionDownloadURL,
 		})
 	}
-	_ = tok // see TODO above — token will be consumed once the service
-	// filters by workspace.
 	writeJSON(w, http.StatusOK, out)
 }
 

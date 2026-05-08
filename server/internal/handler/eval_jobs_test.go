@@ -179,6 +179,169 @@ func TestEvalJobsHandler_Claim_AuthorizedReturnsJobs(t *testing.T) {
 	}
 }
 
+// seedForeignWorkspaceEvalJob inserts a complete eval_job chain
+// (workspace → user → suite → profile → run → task → eval_job) in a
+// freshly-created workspace that the test token (which lives under
+// testWorkspaceID) is NOT authorized for. Returns the foreign job id
+// so the test can later assert it stayed in 'pending'. All rows are
+// removed when the test ends via the workspace ON DELETE CASCADE.
+func seedForeignWorkspaceEvalJob(t *testing.T, instanceID, adapterKind string) (foreignJobIDStr string) {
+	t.Helper()
+	ctx := context.Background()
+
+	suffix := uuid.NewString()[:8]
+
+	var foreignWS, foreignUser string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO "user" (name, email)
+		VALUES ($1, $2)
+		RETURNING id
+	`, "Foreign EvalJob User", "evjob-foreign-"+suffix+"@multica.test").Scan(&foreignUser); err != nil {
+		t.Fatalf("seed foreign user: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO workspace (name, slug, description, issue_prefix)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id
+	`, "Foreign EvalJob WS", "foreign-evjob-"+suffix, "cross-tenant eval-job test", "FEJ").Scan(&foreignWS); err != nil {
+		t.Fatalf("seed foreign workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, foreignWS)
+		testPool.Exec(context.Background(), `DELETE FROM "user" WHERE id = $1`, foreignUser)
+	})
+
+	// Suite + profile (profile needs an agent + runtime).
+	var suiteID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO benchmark_suite (workspace_id, slug, display_name, adapter_kind, instance_ids, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id
+	`, foreignWS, "fej-suite", "FEJ Suite", adapterKind, []string{instanceID}, foreignUser).Scan(&suiteID); err != nil {
+		t.Fatalf("seed foreign suite: %v", err)
+	}
+
+	var runtimeID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_runtime (
+			workspace_id, daemon_id, name, runtime_mode, provider,
+			status, device_info, metadata, last_seen_at
+		)
+		VALUES ($1, NULL, $2, 'cloud', $3, 'online', $4, '{}'::jsonb, now())
+		RETURNING id
+	`, foreignWS, "FEJ Runtime", "fej_runtime_"+suffix, "fej runtime").Scan(&runtimeID); err != nil {
+		t.Fatalf("seed foreign runtime: %v", err)
+	}
+	var agentID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent (
+			workspace_id, name, description, runtime_mode, runtime_config,
+			runtime_id, visibility, max_concurrent_tasks, owner_id, model
+		)
+		VALUES ($1, $2, '', 'cloud', '{}'::jsonb, $3, 'private', 1, $4, $5)
+		RETURNING id
+	`, foreignWS, "FEJ Agent", runtimeID, foreignUser, "claude-opus-4-7").Scan(&agentID); err != nil {
+		t.Fatalf("seed foreign agent: %v", err)
+	}
+
+	var profileID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO benchmark_agent_profile (
+			workspace_id, slug, display_name, agent_id, agent_name,
+			model, prompt_source, prompt_hash, attached_skills, captured_by
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '[]'::jsonb, $9)
+		RETURNING id
+	`, foreignWS, "fej-profile", "FEJ Profile", agentID, "FEJ Agent",
+		"claude-opus-4-7", "fej prompt", "fej-hash-"+suffix, foreignUser).Scan(&profileID); err != nil {
+		t.Fatalf("seed foreign profile: %v", err)
+	}
+
+	var runID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO benchmark_run (
+			workspace_id, suite_id, suite_instance_ids, profile_id,
+			display_name, status, evaluator_mode, created_by
+		)
+		VALUES ($1, $2, $3, $4, 'FEJ Run', 'queued', 'managed', $5)
+		RETURNING id
+	`, foreignWS, suiteID, []string{instanceID}, profileID, foreignUser).Scan(&runID); err != nil {
+		t.Fatalf("seed foreign run: %v", err)
+	}
+
+	var taskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO benchmark_task (run_id, workspace_id, instance_id, instance_meta, status)
+		VALUES ($1, $2, $3, '{}'::jsonb, 'submitted')
+		RETURNING id
+	`, runID, foreignWS, instanceID).Scan(&taskID); err != nil {
+		t.Fatalf("seed foreign task: %v", err)
+	}
+
+	var jobID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO benchmark_eval_job (task_id, workspace_id, adapter_kind, state)
+		VALUES ($1, $2, $3, 'pending')
+		RETURNING id
+	`, taskID, foreignWS, adapterKind).Scan(&jobID); err != nil {
+		t.Fatalf("seed foreign eval_job: %v", err)
+	}
+	return jobID
+}
+
+// TestEvalJobsHandler_Claim_DoesNotCrossWorkspaces verifies the
+// end-to-end isolation guarantee: an evaluator-pool token bound to
+// workspace A must not be able to claim a pending eval_job that lives
+// in a different workspace, even when both jobs share adapter_kind.
+// Regression-protects the workspace_id filter on EvalJobService.Claim.
+func TestEvalJobsHandler_Claim_DoesNotCrossWorkspaces(t *testing.T) {
+	env := newEvalJobsTestEnv(t, "claim-isolation")
+
+	// Seed a job in OUR workspace (so the claim has something to find
+	// — proves the route works at all) and a separate one in a foreign
+	// workspace (which must NOT come back).
+	ownJobID, _ := seedEvalJob(t, env, "alpha__one.aaa", "programbench")
+	foreignJobID := seedForeignWorkspaceEvalJob(t, "beta__two.bbb", "programbench")
+
+	body := map[string]any{
+		"evaluator_id":   "evaluator-A",
+		"adapter_kinds":  []string{"programbench"},
+		"max_concurrent": 5,
+	}
+	w := httptest.NewRecorder()
+	env.router.ServeHTTP(w, authedRequest("POST", "/api/internal/eval-jobs/claim", env.tokenPlain, body))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode body: %v (body=%s)", err, w.Body.String())
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 claimed job (our own), got %d: %v", len(got), got)
+	}
+	if got[0]["job_id"] != ownJobID {
+		t.Fatalf("claimed wrong job: got %v want %s (our own)", got[0]["job_id"], ownJobID)
+	}
+
+	// The foreign workspace's job is still pending — it must never have
+	// been touched by the cross-workspace claim attempt.
+	foreignJobUUID, err := util.ParseUUID(foreignJobID)
+	if err != nil {
+		t.Fatalf("parse foreign job id: %v", err)
+	}
+	foreignRow, err := testHandler.Queries.GetBenchmarkEvalJob(context.Background(), foreignJobUUID)
+	if err != nil {
+		t.Fatalf("reload foreign job: %v", err)
+	}
+	if foreignRow.State != "pending" {
+		t.Fatalf("foreign job leaked: state=%q (must remain pending)", foreignRow.State)
+	}
+	if foreignRow.ClaimedBy.Valid {
+		t.Fatalf("foreign job leaked: claimed_by=%q (must be NULL)", foreignRow.ClaimedBy.String)
+	}
+}
+
 func TestEvalJobsHandler_Claim_RejectsMissingToken_401(t *testing.T) {
 	env := newEvalJobsTestEnv(t, "claim-401")
 
