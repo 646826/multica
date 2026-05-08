@@ -24,9 +24,10 @@ func newBenchmarkHandler(t *testing.T) *BenchmarkHandler {
 		t.Skip("testHandler not initialized (DATABASE_URL unreachable)")
 	}
 	return NewBenchmarkHandler(BenchmarkDeps{
-		Suites:   benchmark.NewSuiteService(testHandler.Queries),
-		Profiles: benchmark.NewProfileService(testHandler.Queries),
-		Runs:     benchmark.NewRunService(testHandler.Queries, testPool, events.New()),
+		Suites:        benchmark.NewSuiteService(testHandler.Queries),
+		Profiles:      benchmark.NewProfileService(testHandler.Queries),
+		Runs:          benchmark.NewRunService(testHandler.Queries, testPool, events.New()),
+		EvaluatorPool: benchmark.NewEvaluatorPoolService(testHandler.Queries),
 	})
 }
 
@@ -1051,5 +1052,187 @@ func TestBenchmarkHandler_ImportEvalResult_404_OnUnknownInstance(t *testing.T) {
 	}
 	if got["error"] != "task_not_found_for_instance" {
 		t.Fatalf("expected error=task_not_found_for_instance, got %v", got["error"])
+	}
+}
+
+// cleanupEvaluatorTokens removes evaluator_pool_token rows the test created
+// in the package-wide workspace. Each test uses a unique display_name so we
+// can drop just our rows without disturbing siblings running in parallel.
+func cleanupEvaluatorTokens(t *testing.T, displayName string) {
+	t.Helper()
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(),
+			`DELETE FROM evaluator_pool_token WHERE workspace_id = $1 AND display_name = $2`,
+			testWorkspaceID, displayName,
+		)
+	})
+}
+
+func TestBenchmarkHandler_CreateEvaluatorToken_201(t *testing.T) {
+	h := newBenchmarkHandler(t)
+	displayName := "ci-create-201-" + uuid.NewString()[:8]
+	cleanupEvaluatorTokens(t, displayName)
+
+	w := httptest.NewRecorder()
+	h.CreateEvaluatorToken(w, newRequest("POST", "/api/benchmarks/evaluator-tokens", map[string]any{
+		"display_name": displayName,
+	}))
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	plain, ok := got["plaintext_token"].(string)
+	if !ok || plain == "" {
+		t.Fatalf("plaintext_token missing or not a string: %v", got["plaintext_token"])
+	}
+	if len(plain) < 4 || plain[:4] != "evp_" {
+		t.Fatalf("plaintext_token does not start with evp_: %q", plain)
+	}
+	if got["display_name"] != displayName {
+		t.Fatalf("display_name mismatch: %v", got["display_name"])
+	}
+	prefix, ok := got["prefix"].(string)
+	if !ok || prefix == "" {
+		t.Fatalf("prefix missing: %v", got["prefix"])
+	}
+	if id, ok := got["id"].(string); !ok || id == "" {
+		t.Fatalf("id missing or not a string: %v", got["id"])
+	}
+	if got["created_by"] != testUserID {
+		t.Fatalf("created_by mismatch: %v", got["created_by"])
+	}
+}
+
+func TestBenchmarkHandler_CreateEvaluatorToken_400_OnEmptyName(t *testing.T) {
+	h := newBenchmarkHandler(t)
+
+	w := httptest.NewRecorder()
+	h.CreateEvaluatorToken(w, newRequest("POST", "/api/benchmarks/evaluator-tokens", map[string]any{
+		"display_name": "   ",
+	}))
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode 400: %v", err)
+	}
+	if got["error"] != "display_name_required" {
+		t.Fatalf("expected error=display_name_required, got %v", got["error"])
+	}
+}
+
+func TestBenchmarkHandler_ListEvaluatorTokens_200(t *testing.T) {
+	h := newBenchmarkHandler(t)
+	displayName := "ci-list-200-" + uuid.NewString()[:8]
+	cleanupEvaluatorTokens(t, displayName)
+
+	// Seed one token so the list is non-empty for shape assertions.
+	wc := httptest.NewRecorder()
+	h.CreateEvaluatorToken(wc, newRequest("POST", "/api/benchmarks/evaluator-tokens", map[string]any{
+		"display_name": displayName,
+	}))
+	if wc.Code != http.StatusCreated {
+		t.Fatalf("seed create: expected 201, got %d: %s", wc.Code, wc.Body.String())
+	}
+
+	w := httptest.NewRecorder()
+	h.ListEvaluatorTokens(w, newRequest("GET", "/api/benchmarks/evaluator-tokens", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode 200: %v", err)
+	}
+	items, ok := got["items"].([]any)
+	if !ok {
+		t.Fatalf("items missing or wrong type: %v", got["items"])
+	}
+	var seeded map[string]any
+	for _, it := range items {
+		m, _ := it.(map[string]any)
+		if m["display_name"] == displayName {
+			seeded = m
+			break
+		}
+	}
+	if seeded == nil {
+		t.Fatalf("seeded token not in list, items=%v", items)
+	}
+	if _, present := seeded["plaintext_token"]; present {
+		t.Fatalf("List response must not include plaintext_token, got %v", seeded)
+	}
+	if _, present := seeded["token_hash"]; present {
+		t.Fatalf("List response must not include token_hash, got %v", seeded)
+	}
+	if seeded["prefix"] == "" || seeded["prefix"] == nil {
+		t.Fatalf("prefix missing in list item: %v", seeded)
+	}
+}
+
+func TestBenchmarkHandler_RevokeEvaluatorToken_204(t *testing.T) {
+	h := newBenchmarkHandler(t)
+	displayName := "ci-revoke-204-" + uuid.NewString()[:8]
+	cleanupEvaluatorTokens(t, displayName)
+
+	// Seed a token so we have a real id to revoke.
+	wc := httptest.NewRecorder()
+	h.CreateEvaluatorToken(wc, newRequest("POST", "/api/benchmarks/evaluator-tokens", map[string]any{
+		"display_name": displayName,
+	}))
+	if wc.Code != http.StatusCreated {
+		t.Fatalf("seed create: expected 201, got %d: %s", wc.Code, wc.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(wc.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created: %v", err)
+	}
+	tokenID, _ := created["id"].(string)
+	if tokenID == "" {
+		t.Fatalf("seeded token has no id")
+	}
+
+	w := httptest.NewRecorder()
+	req := withURLParams(
+		newRequest("DELETE", "/api/benchmarks/evaluator-tokens/"+tokenID, nil),
+		"id", tokenID,
+	)
+	h.RevokeEvaluatorToken(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// List again — the seeded token should now have a non-empty revoked_at.
+	wl := httptest.NewRecorder()
+	h.ListEvaluatorTokens(wl, newRequest("GET", "/api/benchmarks/evaluator-tokens", nil))
+	if wl.Code != http.StatusOK {
+		t.Fatalf("post-revoke list: expected 200, got %d: %s", wl.Code, wl.Body.String())
+	}
+	var listed map[string]any
+	if err := json.Unmarshal(wl.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode listed: %v", err)
+	}
+	items, _ := listed["items"].([]any)
+	var found map[string]any
+	for _, it := range items {
+		m, _ := it.(map[string]any)
+		if m["id"] == tokenID {
+			found = m
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("revoked token not in list, items=%v", items)
+	}
+	revokedAt, _ := found["revoked_at"].(string)
+	if revokedAt == "" {
+		t.Fatalf("expected revoked_at to be populated, got %v", found)
 	}
 }

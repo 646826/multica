@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -19,9 +20,10 @@ import (
 // Profiles is included now (T10) so T11 can plug profile methods into the
 // same handler without changing the constructor signature.
 type BenchmarkDeps struct {
-	Suites   *benchmark.SuiteService
-	Profiles *benchmark.ProfileService
-	Runs     *benchmark.RunService
+	Suites        *benchmark.SuiteService
+	Profiles      *benchmark.ProfileService
+	Runs          *benchmark.RunService
+	EvaluatorPool *benchmark.EvaluatorPoolService
 }
 
 // BenchmarkHandler exposes /api/benchmarks/* routes. It is a sibling of
@@ -58,6 +60,7 @@ const (
 	errSuiteOrProfileNotFound  = "suite_or_profile_not_found"
 	errRunNotFound             = "run_not_found"
 	errTaskNotFoundForInstance = "task_not_found_for_instance"
+	errDisplayNameRequired     = "display_name_required"
 )
 
 // SuiteResponse is the JSON shape for a benchmark_suite at the handler boundary.
@@ -772,4 +775,144 @@ func workspaceIDFromHeaders(r *http.Request) string {
 		return id
 	}
 	return r.URL.Query().Get("workspace_id")
+}
+
+// EvaluatorTokenResponse is the JSON shape for an evaluator_pool_token at the
+// handler boundary. The plain-text token is intentionally NOT in this struct —
+// only CreateEvaluatorTokenResponse exposes it, and only at mint time.
+type EvaluatorTokenResponse struct {
+	ID          string `json:"id"`
+	Prefix      string `json:"prefix"`
+	DisplayName string `json:"display_name"`
+	CreatedBy   string `json:"created_by"`
+	CreatedAt   string `json:"created_at"`
+	LastUsedAt  string `json:"last_used_at,omitempty"`
+	RevokedAt   string `json:"revoked_at,omitempty"`
+}
+
+// CreateEvaluatorTokenResponse extends EvaluatorTokenResponse with the
+// plain-text token. PlaintextToken is only populated on the POST /create
+// response — once returned, the server only retains a SHA-256 hash, so this
+// is the single moment the caller can read it.
+type CreateEvaluatorTokenResponse struct {
+	EvaluatorTokenResponse
+	PlaintextToken string `json:"plaintext_token"`
+}
+
+// createEvaluatorTokenRequest is the inbound JSON payload for
+// POST /api/benchmarks/evaluator-tokens.
+type createEvaluatorTokenRequest struct {
+	DisplayName string `json:"display_name"`
+}
+
+func evpToResponse(t benchmark.EvaluatorPoolToken) EvaluatorTokenResponse {
+	out := EvaluatorTokenResponse{
+		ID:          util.UUIDToString(t.ID),
+		Prefix:      t.TokenPrefix,
+		DisplayName: t.DisplayName,
+		CreatedBy:   util.UUIDToString(t.CreatedBy),
+		CreatedAt:   util.TimestampToString(t.CreatedAt),
+	}
+	if t.LastUsedAt.Valid {
+		out.LastUsedAt = util.TimestampToString(t.LastUsedAt)
+	}
+	if t.RevokedAt.Valid {
+		out.RevokedAt = util.TimestampToString(t.RevokedAt)
+	}
+	return out
+}
+
+// CreateEvaluatorToken handles POST /api/benchmarks/evaluator-tokens.
+//
+// Mints a fresh evaluator pool token. The plain-text token is only returned
+// here — only its SHA-256 hash is stored — so callers must capture it
+// immediately. The display_name field is required (used by operators to
+// identify which deployment a token belongs to in the list view).
+func (h *BenchmarkHandler) CreateEvaluatorToken(w http.ResponseWriter, r *http.Request) {
+	wsUUID, userUUID, ok := resolveBenchmarkContext(w, r)
+	if !ok {
+		return
+	}
+
+	var req createEvaluatorTokenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, errBadBody)
+		return
+	}
+	if strings.TrimSpace(req.DisplayName) == "" {
+		writeError(w, http.StatusBadRequest, errDisplayNameRequired)
+		return
+	}
+
+	tok, plain, err := h.deps.EvaluatorPool.Create(r.Context(), benchmark.CreateEvaluatorPoolTokenInput{
+		WorkspaceID: wsUUID,
+		DisplayName: req.DisplayName,
+		CreatedBy:   userUUID,
+	})
+	if err != nil {
+		slog.Warn("benchmark.evaluator_token_create_failed",
+			append(logger.RequestAttrs(r), "err", err, "workspace_id", uuidToString(wsUUID))...)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+
+	slog.Info("benchmark.evaluator_token_created",
+		append(logger.RequestAttrs(r),
+			"workspace_id", uuidToString(wsUUID),
+			"token_id", uuidToString(tok.ID),
+			"prefix", tok.TokenPrefix,
+		)...)
+	writeJSON(w, http.StatusCreated, CreateEvaluatorTokenResponse{
+		EvaluatorTokenResponse: evpToResponse(tok),
+		PlaintextToken:         plain,
+	})
+}
+
+// ListEvaluatorTokens handles GET /api/benchmarks/evaluator-tokens.
+//
+// Returns all tokens for the workspace, newest first. The plain-text token
+// and the SHA-256 hash are never included in this response by design.
+func (h *BenchmarkHandler) ListEvaluatorTokens(w http.ResponseWriter, r *http.Request) {
+	wsUUID, _, ok := resolveBenchmarkContext(w, r)
+	if !ok {
+		return
+	}
+	rows, err := h.deps.EvaluatorPool.List(r.Context(), wsUUID)
+	if err != nil {
+		slog.Warn("benchmark.list_evaluator_tokens_failed",
+			append(logger.RequestAttrs(r), "err", err, "workspace_id", uuidToString(wsUUID))...)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	items := make([]EvaluatorTokenResponse, 0, len(rows))
+	for _, t := range rows {
+		items = append(items, evpToResponse(t))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// RevokeEvaluatorToken handles DELETE /api/benchmarks/evaluator-tokens/{id}.
+//
+// Marks the token revoked. The underlying sqlc :exec query gives no rowcount,
+// so this is best-effort: the response is 204 even if no row matched (already
+// revoked / unknown id within the workspace). An infra error is logged but
+// still returns 204 to keep the operator UX uniform — operators relist the
+// tokens after a delete to confirm the revoked_at column.
+func (h *BenchmarkHandler) RevokeEvaluatorToken(w http.ResponseWriter, r *http.Request) {
+	wsUUID, _, ok := resolveBenchmarkContext(w, r)
+	if !ok {
+		return
+	}
+	idUUID, ok := parseBenchmarkURLID(w, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	if err := h.deps.EvaluatorPool.Revoke(r.Context(), idUUID, wsUUID); err != nil {
+		slog.Warn("benchmark.evaluator_token_revoke_err",
+			append(logger.RequestAttrs(r), "err", err, "workspace_id", uuidToString(wsUUID), "token_id", uuidToString(idUUID))...)
+	} else {
+		slog.Info("benchmark.evaluator_token_revoked",
+			append(logger.RequestAttrs(r), "workspace_id", uuidToString(wsUUID), "token_id", uuidToString(idUUID))...)
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
