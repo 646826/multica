@@ -285,6 +285,32 @@ func (d *TaskDispatcher) issueOneTask(
 	defer tx.Rollback(ctx)
 	qtx := d.q.WithTx(tx)
 
+	// Per-task advisory lock keeps multi-replica deployments safe: if two
+	// dispatcher replicas tick at the same moment they both list the same
+	// 'queued' task, but only the one that grabs pg_try_advisory_xact_lock
+	// proceeds. The loser quietly skips the task this tick — the winner's
+	// commit will flip the row to 'issued' before the next tick runs.
+	// Lock scope is the transaction (xact_lock), so the lock is released
+	// automatically on commit or rollback.
+	var locked bool
+	if err := tx.QueryRow(ctx,
+		"SELECT pg_try_advisory_xact_lock(hashtext($1))",
+		"benchmark_task:"+util.UUIDToString(task.ID),
+	).Scan(&locked); err != nil {
+		return fmt.Errorf("acquire advisory lock: %w", err)
+	}
+	if !locked {
+		// Another replica owns this task this tick. Roll back the empty tx
+		// and let the caller move on; this is not an error condition.
+		if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			slog.Warn("benchmark.task_dispatcher.lock_rollback_failed",
+				"task_id", util.UUIDToString(task.ID),
+				"err", err,
+			)
+		}
+		return nil
+	}
+
 	issueNumber, err := qtx.IncrementIssueCounter(ctx, run.WorkspaceID)
 	if err != nil {
 		return fmt.Errorf("increment issue counter: %w", err)

@@ -2,6 +2,7 @@ package benchmark_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -296,6 +297,53 @@ func TestTaskDispatcher_WorkspaceConcurrencyCap(t *testing.T) {
 		}
 	}
 	require.Equal(t, 2, issuedAfter, "cap must be honored on every tick, not just the first")
+}
+
+// TestTaskDispatcher_Tick_ConcurrentSafe simulates two replicas ticking
+// at the same instant: three concurrent Tick calls against the same run
+// must still produce exactly one issue per benchmark_task. Without the
+// per-task advisory lock the same task would be picked up by multiple
+// goroutines, each creating its own issue and racing on the
+// 'queued'->'issued' UPDATE — causing duplicate issues for one task.
+func TestTaskDispatcher_Tick_ConcurrentSafe(t *testing.T) {
+	ctx := context.Background()
+	f := newTaskDispatcherFixture(t, "imported", []string{
+		"race__one.aaaaaa1",
+	})
+
+	d := benchmark.NewTaskDispatcher(testQueries, testPool, f.Registry, f.Bus, nil)
+
+	var wg sync.WaitGroup
+	errs := make([]error, 3)
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			errs[idx] = d.Tick(ctx)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		require.NoError(t, err, "tick %d returned error", i)
+	}
+
+	tasks, err := testQueries.ListBenchmarkTasksByRun(ctx, f.Run.ID)
+	require.NoError(t, err)
+	require.Len(t, tasks, 1)
+	require.Equal(t, "issued", tasks[0].Status)
+	require.True(t, tasks[0].IssueID.Valid)
+
+	// Authoritative check: count issues stamped origin=benchmark_run for this
+	// run. Exactly one — losers of the advisory lock must have rolled back
+	// without inserting an issue row.
+	var issueCount int
+	err = testPool.QueryRow(ctx,
+		"SELECT COUNT(*) FROM issue WHERE origin_type='benchmark_run' AND origin_id=$1",
+		f.Run.ID,
+	).Scan(&issueCount)
+	require.NoError(t, err)
+	require.Equal(t, 1, issueCount, "exactly one issue must be created across concurrent ticks")
 }
 
 func TestTaskDispatcher_OnSubmissionEvent_IgnoresUnknownIssue(t *testing.T) {
