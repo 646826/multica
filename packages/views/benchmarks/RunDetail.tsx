@@ -1,8 +1,10 @@
 "use client";
 
+import { useCallback } from "react";
 import { AlertCircle, ArrowLeft } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  benchmarkKeys,
   benchmarkRunDetailOptions,
   benchmarkRunListOptions,
   benchmarkRunSummaryOptions,
@@ -12,7 +14,15 @@ import {
 } from "@multica/core/benchmarks";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
-import type { BenchmarkErrorCode, BenchmarkRun } from "@multica/core/types";
+import { useWSEvent } from "@multica/core/realtime";
+import type {
+  BenchmarkErrorCode,
+  BenchmarkRun,
+  BenchmarkRunCompletedPayload,
+  BenchmarkRunStatusPayload,
+  BenchmarkTaskScoredPayload,
+  BenchmarkTaskStatusPayload,
+} from "@multica/core/types";
 import {
   Alert,
   AlertDescription,
@@ -290,6 +300,7 @@ export default function RunDetail({ runId }: { runId: string }) {
   const paths = useWorkspacePaths();
   const navigation = useNavigation();
   const { t } = useT("benchmarks");
+  const qc = useQueryClient();
 
   const runsBase = paths.benchmarkRuns();
   const goBack = () => navigation.push(runsBase);
@@ -306,6 +317,55 @@ export default function RunDetail({ runId }: { runId: string }) {
     benchmarkRunTasksOptions(wsId, runId),
   );
   const { data: summary } = useQuery(benchmarkRunSummaryOptions(wsId, runId));
+
+  // Live updates: invalidate the relevant caches on benchmark WS events.
+  // We filter by run_id so a sibling run's events don't refetch this page.
+  // The list cache is also bumped so when the user navigates back to the
+  // runs list the row reflects the latest status without a manual refresh.
+  const onRunStatus = useCallback(
+    (payload: unknown) => {
+      const p = payload as BenchmarkRunStatusPayload;
+      if (p.run_id !== runId) return;
+      qc.invalidateQueries({ queryKey: benchmarkKeys.run(wsId, runId) });
+      qc.invalidateQueries({ queryKey: benchmarkKeys.runs(wsId) });
+    },
+    [qc, wsId, runId],
+  );
+  const onRunCompleted = useCallback(
+    (payload: unknown) => {
+      const p = payload as BenchmarkRunCompletedPayload;
+      if (p.run_id !== runId) return;
+      qc.invalidateQueries({ queryKey: benchmarkKeys.run(wsId, runId) });
+      qc.invalidateQueries({ queryKey: benchmarkKeys.runs(wsId) });
+      qc.invalidateQueries({ queryKey: benchmarkKeys.summary(wsId, runId) });
+      qc.invalidateQueries({ queryKey: benchmarkKeys.tasks(wsId, runId) });
+      // Leaderboard depends on completed runs across all suites; we don't
+      // know the suite_slug from the payload, so invalidate the prefix.
+      qc.invalidateQueries({ queryKey: ["benchmarks", wsId, "leaderboard"] });
+    },
+    [qc, wsId, runId],
+  );
+  const onTaskStatus = useCallback(
+    (payload: unknown) => {
+      const p = payload as BenchmarkTaskStatusPayload;
+      if (p.run_id !== runId) return;
+      qc.invalidateQueries({ queryKey: benchmarkKeys.tasks(wsId, runId) });
+    },
+    [qc, wsId, runId],
+  );
+  const onTaskScored = useCallback(
+    (payload: unknown) => {
+      const p = payload as BenchmarkTaskScoredPayload;
+      if (p.run_id !== runId) return;
+      qc.invalidateQueries({ queryKey: benchmarkKeys.tasks(wsId, runId) });
+      qc.invalidateQueries({ queryKey: benchmarkKeys.summary(wsId, runId) });
+    },
+    [qc, wsId, runId],
+  );
+  useWSEvent("benchmark_run:status", onRunStatus);
+  useWSEvent("benchmark_run:completed", onRunCompleted);
+  useWSEvent("benchmark_task:status", onTaskStatus);
+  useWSEvent("benchmark_task:scored", onTaskScored);
 
   if (isLoading) {
     return <LoadingState onBack={goBack} />;

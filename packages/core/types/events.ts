@@ -65,7 +65,12 @@ export type WSEventType =
   | "invitation:created"
   | "invitation:accepted"
   | "invitation:declined"
-  | "invitation:revoked";
+  | "invitation:revoked"
+  | "benchmark_run:created"
+  | "benchmark_run:status"
+  | "benchmark_run:completed"
+  | "benchmark_task:status"
+  | "benchmark_task:scored";
 
 export interface WSMessage<T = unknown> {
   type: WSEventType;
@@ -315,4 +320,50 @@ export interface InvitationDeclinedPayload {
 export interface InvitationRevokedPayload {
   invitation_id: string;
   invitee_email: string;
+}
+
+// Benchmark event payloads. The server emits these from the run / finalizer
+// services (see server/internal/service/benchmark/*). Only the fields the UI
+// currently consumes are typed; backend may add more keys non-breakingly.
+
+export interface BenchmarkRunCreatedPayload {
+  run_id: string;
+  suite_id: string;
+  profile_id: string;
+  status: string;
+  evaluator_mode: string;
+}
+
+export interface BenchmarkRunStatusPayload {
+  run_id: string;
+  status: string;
+}
+
+export interface BenchmarkRunCompletedPayload {
+  run_id: string;
+  status: string;
+  summary?: {
+    resolved_count: number;
+    total_count: number;
+    errored_count: number;
+    aggregate_pass_rate: number;
+    average_pass_rate: number;
+    failure_categories: Array<{ name: string; count: number }>;
+  };
+}
+
+export interface BenchmarkTaskStatusPayload {
+  run_id: string;
+  task_id: string;
+  instance_id: string;
+  status: string;
+  status_reason?: string;
+}
+
+export interface BenchmarkTaskScoredPayload {
+  run_id: string;
+  task_id: string;
+  instance_id: string;
+  resolved: boolean;
+  pass_rate: number;
 }

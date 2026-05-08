@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { AlertCircle, Trophy } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   benchmarkLeaderboardOptions,
   benchmarkSuiteListOptions,
@@ -10,6 +10,7 @@ import {
 } from "@multica/core/benchmarks";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
+import { useWSEvent } from "@multica/core/realtime";
 import type { BenchmarkErrorCode } from "@multica/core/types";
 import {
   Alert,
@@ -92,9 +93,19 @@ export default function Leaderboard() {
   const paths = useWorkspacePaths();
   const navigation = useNavigation();
 
+  const qc = useQueryClient();
   const [suiteSlug, setSuiteSlug] = useState("");
   const { data: suites = [] } = useQuery(benchmarkSuiteListOptions(wsId));
   const lb = useQuery(benchmarkLeaderboardOptions(wsId, suiteSlug));
+
+  // A run completing can change the leaderboard for its suite. We don't have
+  // the suite_slug in the payload, so invalidate every leaderboard query for
+  // this workspace via a prefix match — the open suite refetches; closed
+  // ones stay invalidated and refetch on next mount.
+  const invalidateLeaderboards = useCallback(() => {
+    qc.invalidateQueries({ queryKey: ["benchmarks", wsId, "leaderboard"] });
+  }, [qc, wsId]);
+  useWSEvent("benchmark_run:completed", invalidateLeaderboards);
 
   return (
     <div className="flex flex-1 min-h-0 flex-col">

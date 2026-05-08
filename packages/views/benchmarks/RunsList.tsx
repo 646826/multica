@@ -1,15 +1,17 @@
 "use client";
 
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { AlertCircle, Activity, Plus, Search } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  benchmarkKeys,
   benchmarkRunListOptions,
   extractBenchmarkErrorCode,
   useBenchmarksUI,
 } from "@multica/core/benchmarks";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
+import { useWSEvent } from "@multica/core/realtime";
 import type { BenchmarkErrorCode, BenchmarkRun } from "@multica/core/types";
 import { timeAgo } from "@multica/core/utils";
 import { Alert, AlertDescription, AlertTitle } from "@multica/ui/components/ui/alert";
@@ -219,6 +221,7 @@ export default function RunsList() {
   const paths = useWorkspacePaths();
   const navigation = useNavigation();
   const { t } = useT("benchmarks");
+  const qc = useQueryClient();
   const runFilter = useBenchmarksUI((s) => s.runFilter);
   const setRunFilter = useBenchmarksUI((s) => s.setRunFilter);
 
@@ -229,6 +232,17 @@ export default function RunsList() {
     isLoading,
     error,
   } = useQuery(benchmarkRunListOptions(wsId));
+
+  // Live updates: any run lifecycle event in the workspace can change a row
+  // (new row on `created`, status badge on `status` / `completed`). Single
+  // invalidate hits the list cache; per-event payload filtering isn't useful
+  // here because the list shows every run.
+  const invalidateRuns = useCallback(() => {
+    qc.invalidateQueries({ queryKey: benchmarkKeys.runs(wsId) });
+  }, [qc, wsId]);
+  useWSEvent("benchmark_run:created", invalidateRuns);
+  useWSEvent("benchmark_run:status", invalidateRuns);
+  useWSEvent("benchmark_run:completed", invalidateRuns);
 
   const filtered = useMemo(() => {
     const q = runFilter.trim().toLowerCase();
