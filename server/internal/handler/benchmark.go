@@ -51,12 +51,13 @@ const (
 	errBadUserID         = "bad_user_id"
 	errInstanceListEmpty = "instance_list_empty"
 	errSlugTaken         = "slug_taken"
-	errSuiteNotFound          = "suite_not_found"
-	errProfileNotFound        = "profile_not_found"
-	errAgentNotFound          = "agent_not_found"
-	errInvalidEvaluatorMode   = "invalid_evaluator_mode"
-	errSuiteOrProfileNotFound = "suite_or_profile_not_found"
-	errRunNotFound            = "run_not_found"
+	errSuiteNotFound           = "suite_not_found"
+	errProfileNotFound         = "profile_not_found"
+	errAgentNotFound           = "agent_not_found"
+	errInvalidEvaluatorMode    = "invalid_evaluator_mode"
+	errSuiteOrProfileNotFound  = "suite_or_profile_not_found"
+	errRunNotFound             = "run_not_found"
+	errTaskNotFoundForInstance = "task_not_found_for_instance"
 )
 
 // SuiteResponse is the JSON shape for a benchmark_suite at the handler boundary.
@@ -649,6 +650,98 @@ func (h *BenchmarkHandler) CancelRun(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("benchmark.run_canceled",
 		append(logger.RequestAttrs(r), "workspace_id", uuidToString(wsUUID), "run_id", id)...)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// importEvalResultRequest is the inbound JSON payload for
+// POST /api/benchmarks/runs/{id}/eval-results/{instance_id}.
+//
+// Used by the imported-evaluator flow: an external evaluator (CI / Modal /
+// human reviewer) has produced scoring data for a single (run, instance_id)
+// and posts it back so Multica can advance the task to 'scored' and persist
+// the eval row. RawEvalJSON is opaque adapter-specific JSON; the service
+// layer stores it verbatim. FailedCategories is normalized server-side.
+type importEvalResultRequest struct {
+	Resolved         bool            `json:"resolved"`
+	PassedTests      int             `json:"passed_tests"`
+	TotalTests       int             `json:"total_tests"`
+	PassRate         float64         `json:"pass_rate"`
+	RawEvalJSON      json.RawMessage `json:"raw_eval_json"`
+	FailedCategories []string        `json:"failed_categories"`
+}
+
+// ImportEvalResult handles POST /api/benchmarks/runs/{id}/eval-results/{instance_id}.
+//
+// Imported-evaluator path: the caller has run the suite's evaluator out of
+// band and posts the scoring payload here. The service-layer call is
+// transactional (eval_result upsert + task status flip) so a partial failure
+// never leaves a task scored without an eval row, or vice versa. Returns
+// 204 on success, 404 if no benchmark_task exists for (run_id, instance_id)
+// in this workspace.
+func (h *BenchmarkHandler) ImportEvalResult(w http.ResponseWriter, r *http.Request) {
+	wsUUID, _, ok := resolveBenchmarkContext(w, r)
+	if !ok {
+		return
+	}
+
+	runID, ok := parseBenchmarkURLID(w, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+
+	instanceID := chi.URLParam(r, "instance_id")
+	if instanceID == "" {
+		writeError(w, http.StatusBadRequest, errBadID)
+		return
+	}
+
+	var req importEvalResultRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, errBadBody)
+		return
+	}
+	// Pass through raw JSON verbatim; an absent field becomes the literal
+	// `null` so the service-side jsonb column never sees a Go-nil byte slice.
+	if req.RawEvalJSON == nil {
+		req.RawEvalJSON = json.RawMessage(`null`)
+	}
+	if req.FailedCategories == nil {
+		req.FailedCategories = []string{}
+	}
+
+	err := h.deps.Runs.ImportEvalResult(r.Context(), benchmark.ImportEvalResultInput{
+		WorkspaceID:      wsUUID,
+		RunID:            runID,
+		InstanceID:       instanceID,
+		Resolved:         req.Resolved,
+		PassedTests:      req.PassedTests,
+		TotalTests:       req.TotalTests,
+		PassRate:         req.PassRate,
+		RawEvalJSON:      req.RawEvalJSON,
+		FailedCategories: req.FailedCategories,
+	})
+	switch {
+	case errors.Is(err, benchmark.ErrTaskNotFoundForInstance):
+		writeError(w, http.StatusNotFound, errTaskNotFoundForInstance)
+		return
+	case err != nil:
+		slog.Warn("benchmark.import_eval_result_failed",
+			append(logger.RequestAttrs(r),
+				"err", err,
+				"workspace_id", uuidToString(wsUUID),
+				"run_id", uuidToString(runID),
+				"instance_id", instanceID,
+			)...)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+
+	slog.Info("benchmark.eval_result_imported",
+		append(logger.RequestAttrs(r),
+			"workspace_id", uuidToString(wsUUID),
+			"run_id", uuidToString(runID),
+			"instance_id", instanceID,
+		)...)
 	w.WriteHeader(http.StatusNoContent)
 }
 

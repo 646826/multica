@@ -11,6 +11,8 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/service/benchmark"
+	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // newBenchmarkHandler builds a BenchmarkHandler wired to the same test pool /
@@ -914,5 +916,140 @@ func TestBenchmarkHandler_CancelRun_204_And_404(t *testing.T) {
 	}
 	if nf["error"] != "run_not_found" {
 		t.Fatalf("expected error=run_not_found, got %v", nf["error"])
+	}
+}
+
+// startImportedRun seeds a suite + profile + run in 'imported' evaluator
+// mode and returns the run UUID (string). Cleanup of the suite + run rows
+// is registered via t.Cleanup. The run starts with no benchmark_task rows;
+// callers create tasks themselves to drive whatever code path they exercise.
+func startImportedRun(t *testing.T, h *BenchmarkHandler, label string) string {
+	t.Helper()
+	suiteID, profileID := seedBenchmarkRunFixtures(t, h, label)
+	cleanupBenchmarkRunsForSuite(t, suiteID)
+
+	w := httptest.NewRecorder()
+	h.StartRun(w, newRequest("POST", "/api/benchmarks/runs", map[string]any{
+		"suite_id":       suiteID,
+		"profile_id":     profileID,
+		"display_name":   "Imported " + label,
+		"evaluator_mode": "imported",
+	}))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("seed imported run: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var seeded map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &seeded); err != nil {
+		t.Fatalf("decode seeded run: %v", err)
+	}
+	id, _ := seeded["id"].(string)
+	if id == "" {
+		t.Fatalf("seeded run has no id")
+	}
+	return id
+}
+
+func TestBenchmarkHandler_ImportEvalResult_204(t *testing.T) {
+	h := newBenchmarkHandler(t)
+	runID := startImportedRun(t, h, "import204")
+
+	// Seed a benchmark_task in 'submitted' state — TaskDispatcher would
+	// normally do this, but we don't run the dispatcher in handler tests.
+	runUUID, err := util.ParseUUID(runID)
+	if err != nil {
+		t.Fatalf("parse run id: %v", err)
+	}
+	wsUUID, err := util.ParseUUID(testWorkspaceID)
+	if err != nil {
+		t.Fatalf("parse workspace id: %v", err)
+	}
+	const instanceID = "abishekvashok__cmatrix.5c082c6"
+	task, err := testHandler.Queries.CreateBenchmarkTask(context.Background(), db.CreateBenchmarkTaskParams{
+		RunID:        runUUID,
+		WorkspaceID:  wsUUID,
+		InstanceID:   instanceID,
+		InstanceMeta: []byte("{}"),
+		Status:       "submitted",
+		StatusReason: "",
+	})
+	if err != nil {
+		t.Fatalf("seed benchmark_task: %v", err)
+	}
+
+	body := map[string]any{
+		"resolved":          true,
+		"passed_tests":      5,
+		"total_tests":       5,
+		"pass_rate":         1.0,
+		"raw_eval_json":     map[string]any{},
+		"failed_categories": []string{},
+	}
+	w := httptest.NewRecorder()
+	req := withURLParams(
+		newRequest("POST", "/api/benchmarks/runs/"+runID+"/eval-results/"+instanceID, body),
+		"id", runID,
+		"instance_id", instanceID,
+	)
+	h.ImportEvalResult(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify the task advanced to 'scored'.
+	updated, err := testHandler.Queries.GetBenchmarkTask(context.Background(), db.GetBenchmarkTaskParams{
+		ID:          task.ID,
+		WorkspaceID: wsUUID,
+	})
+	if err != nil {
+		t.Fatalf("reload task: %v", err)
+	}
+	if updated.Status != "scored" {
+		t.Fatalf("task status: expected scored, got %q", updated.Status)
+	}
+
+	// Verify the eval_result row was upserted.
+	er, err := testHandler.Queries.GetBenchmarkEvalResult(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("get eval result: %v", err)
+	}
+	if !er.Resolved {
+		t.Fatalf("eval_result.resolved: expected true")
+	}
+	if er.PassedTests != 5 || er.TotalTests != 5 {
+		t.Fatalf("eval_result tests: expected 5/5, got %d/%d", er.PassedTests, er.TotalTests)
+	}
+}
+
+func TestBenchmarkHandler_ImportEvalResult_404_OnUnknownInstance(t *testing.T) {
+	h := newBenchmarkHandler(t)
+	runID := startImportedRun(t, h, "import404")
+
+	// No benchmark_task row was created for this instance_id, so the
+	// service-layer lookup will return ErrTaskNotFoundForInstance.
+	const unknownInstance = "ghost__pkg.0000000"
+	body := map[string]any{
+		"resolved":          false,
+		"passed_tests":      0,
+		"total_tests":       1,
+		"pass_rate":         0.0,
+		"raw_eval_json":     map[string]any{},
+		"failed_categories": []string{},
+	}
+	w := httptest.NewRecorder()
+	req := withURLParams(
+		newRequest("POST", "/api/benchmarks/runs/"+runID+"/eval-results/"+unknownInstance, body),
+		"id", runID,
+		"instance_id", unknownInstance,
+	)
+	h.ImportEvalResult(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode 404: %v", err)
+	}
+	if got["error"] != "task_not_found_for_instance" {
+		t.Fatalf("expected error=task_not_found_for_instance, got %v", got["error"])
 	}
 }
