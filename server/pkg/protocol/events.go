@@ -105,4 +105,11 @@ const (
 	EventDaemonHeartbeatAck  = "daemon:heartbeat_ack"
 	EventDaemonRegister      = "daemon:register"
 	EventDaemonTaskAvailable = "daemon:task_available"
+
+	// Benchmark feature events. Phase 1a wires run/task lifecycle.
+	EventBenchmarkRunCreated   = "benchmark_run:created"
+	EventBenchmarkRunStatus    = "benchmark_run:status"
+	EventBenchmarkRunCompleted = "benchmark_run:completed"
+	EventBenchmarkTaskStatus   = "benchmark_task:status"
+	EventBenchmarkTaskScored   = "benchmark_task:scored"
 )
