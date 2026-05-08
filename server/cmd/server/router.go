@@ -510,8 +510,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 						r.Get("/", benchmarkHandler.GetRun)
 						r.Post("/cancel", benchmarkHandler.CancelRun)
 						r.Post("/eval-results/{instance_id}", benchmarkHandler.ImportEvalResult)
+						r.Get("/compare", benchmarkHandler.CompareRun)
 					})
 				})
+				r.Get("/leaderboard", benchmarkHandler.Leaderboard)
 				r.Route("/evaluator-tokens", func(r chi.Router) {
 					r.Get("/", benchmarkHandler.ListEvaluatorTokens)
 					r.Post("/", benchmarkHandler.CreateEvaluatorToken)
