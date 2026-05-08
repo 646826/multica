@@ -11,8 +11,10 @@ WHERE workspace_id = $1
 ORDER BY created_at DESC;
 
 -- name: GetEvaluatorPoolTokenByHash :one
+-- Returns the token regardless of revoked_at; the service layer is
+-- responsible for distinguishing "not found" from "revoked".
 SELECT * FROM evaluator_pool_token
-WHERE token_hash = $1 AND revoked_at IS NULL;
+WHERE token_hash = $1;
 
 -- name: TouchEvaluatorPoolToken :exec
 UPDATE evaluator_pool_token SET last_used_at = now() WHERE id = $1;

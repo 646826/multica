@@ -50,8 +50,10 @@ func (q *Queries) CreateEvaluatorPoolToken(ctx context.Context, arg CreateEvalua
 }
 
 const getEvaluatorPoolTokenByHash = `-- name: GetEvaluatorPoolTokenByHash :one
+-- Returns the token regardless of revoked_at; the service layer is
+-- responsible for distinguishing "not found" from "revoked".
 SELECT id, workspace_id, token_prefix, token_hash, display_name, created_at, created_by, last_used_at, revoked_at FROM evaluator_pool_token
-WHERE token_hash = $1 AND revoked_at IS NULL
+WHERE token_hash = $1
 `
 
 func (q *Queries) GetEvaluatorPoolTokenByHash(ctx context.Context, tokenHash string) (EvaluatorPoolToken, error) {
