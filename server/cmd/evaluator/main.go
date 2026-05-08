@@ -28,6 +28,7 @@ func main() {
 
 	registry := adapter.NewRegistry()
 	registry.RegisterEvaluator(adapter.NewProgramBenchEvaluator())
+	registry.RegisterEvaluator(adapter.NewSWEBenchEvaluator())
 
 	client := NewClient(cfg.ServerURL, cfg.Token)
 	runner := NewRunner(client, registry, cfg.WorkDir)

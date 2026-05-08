@@ -99,3 +99,7 @@ The Catalog shells out to `uvx programbench` for task metadata. The Composer ren
 - `Instance.Meta` is opaque `json.RawMessage`. The server round-trips it without parsing. Adapters can encode whatever they need.
 - `EvaluateOutput.RawEvalJSON` is persisted verbatim into `benchmark_eval_result.raw_eval_json`. Keep it the upstream tool's native shape so it can be replayed later.
 - `EvaluateOutput.FailedCategories` should be **deduplicated** strings. The server aggregates by count across tasks for the run summary.
+
+## Second adapter: SWE-bench
+
+`server/internal/service/benchmark/adapter/swebench.go` ships a SWE-bench adapter as a working second example. It uses the same uvx-based shell-out pattern as ProgramBench but with different task metadata, prompt template, and report format. Use it as a reference when adding your own adapter — the differences from ProgramBench (different `Kind()`, different catalog package, different report parser) are concentrated in <300 LOC.
