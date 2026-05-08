@@ -212,7 +212,10 @@
     "replay_fetch_url_label": "PR URL (optional)",
     "replay_fetch_button": "Fetch",
     "replay_fetch_pending": "Fetching…",
-    "replay_fetch_help": "Paste a GitHub PR URL or a direct .patch / .diff link to auto-populate the patch."
+    "replay_fetch_help": "Paste a GitHub PR URL or a direct .patch / .diff link to auto-populate the patch.",
+    "replay_dragdrop_help": "Or drag and drop a .patch / .diff file here.",
+    "replay_dragdrop_wrong_ext": "Drop a .patch or .diff file.",
+    "replay_dragdrop_too_large": "That file is larger than 10 MB — paste the diff manually if it's really that big."
   },
   "suite_detail": {
     "fallback_title": "Suite",

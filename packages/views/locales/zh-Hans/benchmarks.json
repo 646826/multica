@@ -212,7 +212,10 @@
     "replay_fetch_url_label": "PR 链接（可选）",
     "replay_fetch_button": "拉取",
     "replay_fetch_pending": "拉取中…",
-    "replay_fetch_help": "粘贴 GitHub PR 链接或直接 .patch / .diff 链接，自动填充 patch 内容。"
+    "replay_fetch_help": "粘贴 GitHub PR 链接或直接 .patch / .diff 链接，自动填充 patch 内容。",
+    "replay_dragdrop_help": "或将 .patch / .diff 文件拖放到此处。",
+    "replay_dragdrop_wrong_ext": "请拖入 .patch 或 .diff 文件。",
+    "replay_dragdrop_too_large": "文件超过 10 MB — 如果确实需要，请手动粘贴 diff。"
   },
   "suite_detail": {
     "fallback_title": "套件",

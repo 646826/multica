@@ -3,14 +3,10 @@
 import { useState, type FormEvent } from "react";
 import { AlertCircle, ArrowLeft } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import {
-  extractBenchmarkErrorCode,
-  useCaptureBenchmarkProfile,
-} from "@multica/core/benchmarks";
+import { useCaptureBenchmarkProfile } from "@multica/core/benchmarks";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { agentListOptions } from "@multica/core/workspace/queries";
-import type { BenchmarkErrorCode } from "@multica/core/types";
 import {
   Alert,
   AlertDescription,
@@ -26,72 +22,7 @@ import {
 import { useNavigation } from "../navigation";
 import { PageHeader } from "../layout/page-header";
 import { useT } from "../i18n";
-
-type Translator = ReturnType<typeof useT<"benchmarks">>["t"];
-
-/**
- * Map a benchmark error code to a user-facing message for the capture form.
- * Covers the full union so new codes are caught at compile time.
- */
-function messageForCode(t: Translator, code: BenchmarkErrorCode): string {
-  switch (code) {
-    case "agent_not_found":
-      return t(($) => $.errors.agent_not_found_in_workspace);
-    case "slug_taken":
-      return t(($) => $.errors.slug_taken_pick_different);
-    case "instance_list_empty":
-      return t(($) => $.errors.add_one_instance);
-    case "bad_body":
-      return t(($) => $.errors.bad_form_body);
-    case "bad_id":
-      return t(($) => $.errors.bad_id);
-    case "bad_user_id":
-    case "bad_workspace_id":
-    case "workspace_required":
-      return t(($) => $.errors.workspace_context_missing);
-    case "unauthenticated":
-      return t(($) => $.errors.unauthenticated);
-    case "internal_error":
-      return t(($) => $.errors.internal_error);
-    case "suite_not_found":
-      return t(($) => $.errors.suite_not_found);
-    case "profile_not_found":
-      return t(($) => $.errors.profile_not_found);
-    case "invalid_evaluator_mode":
-      return t(($) => $.errors.invalid_evaluator_mode);
-    case "suite_or_profile_not_found":
-      return t(($) => $.errors.suite_or_profile_not_found);
-    case "task_not_found_for_instance":
-      return t(($) => $.errors.task_not_found_for_instance);
-    case "run_not_found":
-      return t(($) => $.errors.run_not_found);
-    case "display_name_required":
-      return t(($) => $.errors.display_name_required);
-    case "evaluator_id_required":
-      return t(($) => $.errors.evaluator_id_required);
-    case "adapter_kinds_required":
-      return t(($) => $.errors.adapter_kinds_required);
-    case "eval_job_not_found":
-      return t(($) => $.errors.eval_job_not_found);
-    case "adapter_unknown":
-      return t(($) => $.errors.adapter_unknown);
-    case "summary_not_available":
-      return t(($) => $.errors.summary_not_available);
-    case "unsupported_reference_url":
-      return t(($) => $.errors.unsupported_reference_url);
-    case "reference_fetch_failed":
-      return t(($) => $.errors.reference_fetch_failed);
-    case "url_required":
-      return t(($) => $.errors.url_required);
-  }
-}
-
-function errorMessage(t: Translator, err: unknown): string {
-  const code = extractBenchmarkErrorCode(err);
-  if (code) return messageForCode(t, code);
-  if (err instanceof Error && err.message) return err.message;
-  return t(($) => $.errors.capture_profile_failed);
-}
+import { useBenchmarkErrorFallback } from "./error-message";
 
 export default function ProfileCapture() {
   const wsId = useWorkspaceId();
@@ -99,6 +30,12 @@ export default function ProfileCapture() {
   const navigation = useNavigation();
   const captureProfile = useCaptureBenchmarkProfile();
   const { t } = useT("benchmarks");
+  const errorMessage = useBenchmarkErrorFallback({
+    agent_not_found: (t) => t(($) => $.errors.agent_not_found_in_workspace),
+    slug_taken: (t) => t(($) => $.errors.slug_taken_pick_different),
+    instance_list_empty: (t) => t(($) => $.errors.add_one_instance),
+    bad_body: (t) => t(($) => $.errors.bad_form_body),
+  });
 
   const profilesBase = paths.benchmarkProfiles();
 
@@ -146,7 +83,10 @@ export default function ProfileCapture() {
   };
 
   const submitError = captureProfile.error
-    ? errorMessage(t, captureProfile.error)
+    ? errorMessage(
+        captureProfile.error,
+        t(($) => $.errors.capture_profile_failed),
+      )
     : null;
   const inlineError = validationError ?? submitError;
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState, type DragEvent, type FormEvent } from "react";
 import { AlertCircle, ArrowLeft } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -12,7 +12,7 @@ import {
 } from "@multica/core/benchmarks";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
-import type { BenchmarkErrorCode, EligibleIssue } from "@multica/core/types";
+import type { EligibleIssue } from "@multica/core/types";
 import {
   Alert,
   AlertDescription,
@@ -31,6 +31,10 @@ import { cn } from "@multica/ui/lib/utils";
 import { useNavigation } from "../navigation";
 import { PageHeader } from "../layout/page-header";
 import { useT } from "../i18n";
+import {
+  useBenchmarkErrorFallback,
+  useBenchmarkErrorMessage,
+} from "./error-message";
 
 const ADAPTER_KIND = "programbench" as const;
 
@@ -38,68 +42,16 @@ type Translator = ReturnType<typeof useT<"benchmarks">>["t"];
 type SuiteMode = "programbench" | "replay";
 
 /**
- * Map a benchmark error code to a user-facing message for the create form.
- * Covers the full union so new codes are caught at compile time.
+ * Per-form override map: pasted patches and form-body errors get the
+ * "form data was rejected" copy; missing-instance and slug-taken get
+ * the "add at least one instance id" / "pick a different slug" copy
+ * the create form has used historically.
  */
-function messageForCode(t: Translator, code: BenchmarkErrorCode): string {
-  switch (code) {
-    case "slug_taken":
-      return t(($) => $.errors.slug_taken_pick_different);
-    case "instance_list_empty":
-      return t(($) => $.errors.add_one_instance);
-    case "bad_body":
-      return t(($) => $.errors.bad_form_body);
-    case "bad_id":
-      return t(($) => $.errors.bad_id);
-    case "bad_user_id":
-    case "bad_workspace_id":
-    case "workspace_required":
-      return t(($) => $.errors.workspace_context_missing);
-    case "unauthenticated":
-      return t(($) => $.errors.unauthenticated);
-    case "internal_error":
-      return t(($) => $.errors.internal_error);
-    case "suite_not_found":
-      return t(($) => $.errors.suite_not_found);
-    case "profile_not_found":
-      return t(($) => $.errors.profile_not_found);
-    case "agent_not_found":
-      return t(($) => $.errors.agent_not_found);
-    case "invalid_evaluator_mode":
-      return t(($) => $.errors.invalid_evaluator_mode);
-    case "suite_or_profile_not_found":
-      return t(($) => $.errors.suite_or_profile_not_found);
-    case "task_not_found_for_instance":
-      return t(($) => $.errors.task_not_found_for_instance);
-    case "run_not_found":
-      return t(($) => $.errors.run_not_found);
-    case "display_name_required":
-      return t(($) => $.errors.display_name_required);
-    case "evaluator_id_required":
-      return t(($) => $.errors.evaluator_id_required);
-    case "adapter_kinds_required":
-      return t(($) => $.errors.adapter_kinds_required);
-    case "eval_job_not_found":
-      return t(($) => $.errors.eval_job_not_found);
-    case "adapter_unknown":
-      return t(($) => $.errors.adapter_unknown);
-    case "summary_not_available":
-      return t(($) => $.errors.summary_not_available);
-    case "unsupported_reference_url":
-      return t(($) => $.errors.unsupported_reference_url);
-    case "reference_fetch_failed":
-      return t(($) => $.errors.reference_fetch_failed);
-    case "url_required":
-      return t(($) => $.errors.url_required);
-  }
-}
-
-function errorMessage(t: Translator, err: unknown): string {
-  const code = extractBenchmarkErrorCode(err);
-  if (code) return messageForCode(t, code);
-  if (err instanceof Error && err.message) return err.message;
-  return t(($) => $.errors.create_suite_failed);
-}
+const SUITE_CREATE_OVERRIDES = {
+  slug_taken: (t: Translator) => t(($) => $.errors.slug_taken_pick_different),
+  instance_list_empty: (t: Translator) => t(($) => $.errors.add_one_instance),
+  bad_body: (t: Translator) => t(($) => $.errors.bad_form_body),
+};
 
 /** Per-issue reference patch + optional PR url, indexed by source_issue_id. */
 type ReferenceEntry = { patch: string; prUrl: string };
@@ -111,6 +63,7 @@ export default function SuiteCreate() {
   const createSuite = useCreateBenchmarkSuite();
   const createReplay = useCreateReplaySuite();
   const { t } = useT("benchmarks");
+  const errorMessage = useBenchmarkErrorFallback(SUITE_CREATE_OVERRIDES);
 
   const suitesBase = paths.benchmarkSuites();
 
@@ -252,7 +205,7 @@ export default function SuiteCreate() {
 
   const activeMutation = mode === "programbench" ? createSuite : createReplay;
   const submitError = activeMutation.error
-    ? errorMessage(t, activeMutation.error)
+    ? errorMessage(activeMutation.error, t(($) => $.errors.create_suite_failed))
     : null;
   const inlineError = validationError ?? submitError;
 
@@ -530,6 +483,14 @@ interface ReferencePatchEditorProps {
   onChange: (patch: Partial<ReferenceEntry>) => void;
 }
 
+/**
+ * Cap drag-dropped patch files at 10 MiB. Real-world unified diffs almost
+ * never exceed a few hundred KiB; anything larger is overwhelmingly likely
+ * to be a misclick (binary, log, etc.) and we don't want to load it into
+ * the textarea at all.
+ */
+const MAX_PATCH_FILE_BYTES = 10 * 1024 * 1024;
+
 function ReferencePatchEditor({
   t,
   issueId,
@@ -540,8 +501,11 @@ function ReferencePatchEditor({
   const urlId = `replay-pr-url-${issueId}`;
   const fetchUrlId = `replay-fetch-url-${issueId}`;
   const fetchRef = useFetchReplayReference();
+  const messageFn = useBenchmarkErrorMessage(SUITE_CREATE_OVERRIDES);
   const [fetchUrl, setFetchUrl] = useState("");
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [dropError, setDropError] = useState<string | null>(null);
 
   const canFetch = fetchUrl.trim().length > 0 && !fetchRef.isPending;
 
@@ -554,8 +518,45 @@ function ReferencePatchEditor({
       onChange({ patch: res.patch, prUrl: res.source_url });
     } catch (err) {
       const code = extractBenchmarkErrorCode(err);
-      setFetchError(code ? messageForCode(t, code) : errorMessage(t, err));
+      setFetchError(
+        code
+          ? messageFn(code)
+          : err instanceof Error && err.message
+            ? err.message
+            : t(($) => $.errors.reference_fetch_failed),
+      );
     }
+  }
+
+  function handleDragOver(e: DragEvent<HTMLDivElement>) {
+    // Only react to file drags so non-file drags (text selections, etc.)
+    // don't make the whole textarea pulse blue.
+    if (!e.dataTransfer.types.includes("Files")) return;
+    e.preventDefault();
+    setDragging(true);
+  }
+
+  function handleDragLeave(e: DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setDragging(false);
+  }
+
+  async function handleDrop(e: DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setDragging(false);
+    setDropError(null);
+    const file = e.dataTransfer.files[0];
+    if (!file) return;
+    if (!/\.(patch|diff)$/i.test(file.name)) {
+      setDropError(t(($) => $.suite_create.replay_dragdrop_wrong_ext));
+      return;
+    }
+    if (file.size > MAX_PATCH_FILE_BYTES) {
+      setDropError(t(($) => $.suite_create.replay_dragdrop_too_large));
+      return;
+    }
+    const text = await file.text();
+    onChange({ patch: text });
   }
 
   return (
@@ -597,17 +598,36 @@ function ReferencePatchEditor({
         <Label htmlFor={patchId}>
           {t(($) => $.suite_create.replay_reference_label)}
         </Label>
-        <Textarea
-          id={patchId}
-          value={value.patch}
-          onChange={(e) => onChange({ patch: e.target.value })}
-          rows={6}
-          required
-          className="font-mono text-xs"
-        />
+        <div
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className={cn(
+            "rounded-md transition-shadow",
+            dragging && "ring-2 ring-blue-500 ring-offset-1",
+          )}
+        >
+          <Textarea
+            id={patchId}
+            value={value.patch}
+            onChange={(e) => onChange({ patch: e.target.value })}
+            rows={6}
+            required
+            className="font-mono text-xs"
+          />
+        </div>
         <p className="text-xs text-muted-foreground">
           {t(($) => $.suite_create.replay_reference_help)}
         </p>
+        <p className="text-xs text-muted-foreground">
+          {t(($) => $.suite_create.replay_dragdrop_help)}
+        </p>
+        {dropError && (
+          <Alert variant="destructive">
+            <AlertCircle />
+            <AlertDescription>{dropError}</AlertDescription>
+          </Alert>
+        )}
       </div>
       <div className="flex flex-col gap-1.5">
         <Label htmlFor={urlId}>

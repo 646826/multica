@@ -9,14 +9,12 @@ import {
   benchmarkRunListOptions,
   benchmarkRunSummaryOptions,
   benchmarkRunTasksOptions,
-  extractBenchmarkErrorCode,
   useCancelBenchmarkRun,
 } from "@multica/core/benchmarks";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useWSEvent } from "@multica/core/realtime";
 import type {
-  BenchmarkErrorCode,
   BenchmarkRun,
   BenchmarkRunCompletedPayload,
   BenchmarkRunStatusPayload,
@@ -40,73 +38,7 @@ import { useNavigation, AppLink } from "../navigation";
 import { PageHeader } from "../layout/page-header";
 import { useT } from "../i18n";
 import { StatusPill } from "./StatusPill";
-
-type Translator = ReturnType<typeof useT<"benchmarks">>["t"];
-
-/**
- * Map a benchmark error code to a user-facing message for the run detail
- * view. The full union is covered exhaustively so a new code in the union
- * becomes a type error rather than a silent fall-through.
- */
-function messageForCode(t: Translator, code: BenchmarkErrorCode): string {
-  switch (code) {
-    case "unauthenticated":
-      return t(($) => $.errors.unauthenticated);
-    case "workspace_required":
-    case "bad_workspace_id":
-    case "bad_user_id":
-      return t(($) => $.errors.workspace_context_missing);
-    case "bad_id":
-      return t(($) => $.errors.bad_id);
-    case "internal_error":
-      return t(($) => $.errors.internal_error);
-    case "suite_not_found":
-      return t(($) => $.errors.suite_not_found);
-    case "profile_not_found":
-      return t(($) => $.errors.profile_not_found);
-    case "agent_not_found":
-      return t(($) => $.errors.agent_not_found);
-    case "slug_taken":
-      return t(($) => $.errors.slug_taken_suite);
-    case "instance_list_empty":
-      return t(($) => $.errors.instance_list_empty);
-    case "bad_body":
-      return t(($) => $.errors.bad_body);
-    case "invalid_evaluator_mode":
-      return t(($) => $.errors.invalid_evaluator_mode);
-    case "suite_or_profile_not_found":
-      return t(($) => $.errors.suite_or_profile_not_found);
-    case "task_not_found_for_instance":
-      return t(($) => $.errors.task_not_found_for_instance);
-    case "run_not_found":
-      return t(($) => $.errors.run_not_found);
-    case "display_name_required":
-      return t(($) => $.errors.display_name_required);
-    case "evaluator_id_required":
-      return t(($) => $.errors.evaluator_id_required);
-    case "adapter_kinds_required":
-      return t(($) => $.errors.adapter_kinds_required);
-    case "eval_job_not_found":
-      return t(($) => $.errors.eval_job_not_found);
-    case "adapter_unknown":
-      return t(($) => $.errors.adapter_unknown);
-    case "summary_not_available":
-      return t(($) => $.errors.summary_not_available);
-    case "unsupported_reference_url":
-      return t(($) => $.errors.unsupported_reference_url);
-    case "reference_fetch_failed":
-      return t(($) => $.errors.reference_fetch_failed);
-    case "url_required":
-      return t(($) => $.errors.url_required);
-  }
-}
-
-function errorMessage(t: Translator, err: unknown): string {
-  const code = extractBenchmarkErrorCode(err);
-  if (code) return messageForCode(t, code);
-  if (err instanceof Error && err.message) return err.message;
-  return t(($) => $.run_detail.error_title);
-}
+import { useBenchmarkErrorFallback } from "./error-message";
 
 /**
  * Format `submission_timeout_seconds` as a compact `Hh Mm` string. Hours are
@@ -308,6 +240,9 @@ export default function RunDetail({ runId }: { runId: string }) {
   const paths = useWorkspacePaths();
   const navigation = useNavigation();
   const { t } = useT("benchmarks");
+  const errorMessage = useBenchmarkErrorFallback({
+    slug_taken: (t) => t(($) => $.errors.slug_taken_suite),
+  });
   const qc = useQueryClient();
 
   const runsBase = paths.benchmarkRuns();
@@ -381,7 +316,7 @@ export default function RunDetail({ runId }: { runId: string }) {
 
   if (error || !run) {
     const message = error
-      ? errorMessage(t, error)
+      ? errorMessage(error, t(($) => $.run_detail.error_title))
       : t(($) => $.errors.run_not_found);
     return (
       <div className="flex flex-1 min-h-0 flex-col">

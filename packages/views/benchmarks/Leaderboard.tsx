@@ -11,7 +11,6 @@ import {
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useWSEvent } from "@multica/core/realtime";
-import type { BenchmarkErrorCode } from "@multica/core/types";
 import {
   Alert,
   AlertDescription,
@@ -24,67 +23,7 @@ import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { useNavigation } from "../navigation";
 import { PageHeader } from "../layout/page-header";
 import { useT } from "../i18n";
-
-type Translator = ReturnType<typeof useT<"benchmarks">>["t"];
-
-/**
- * Map a benchmark error code to a user-facing message. The leaderboard
- * endpoint can fail with auth / workspace / suite-not-found errors plus the
- * usual broad codes; cover the union exhaustively so a new code becomes a
- * compile error rather than a silent fall-through.
- */
-function messageForCode(t: Translator, code: BenchmarkErrorCode): string {
-  switch (code) {
-    case "unauthenticated":
-      return t(($) => $.errors.unauthenticated);
-    case "workspace_required":
-    case "bad_workspace_id":
-    case "bad_user_id":
-      return t(($) => $.errors.workspace_context_missing);
-    case "internal_error":
-      return t(($) => $.errors.internal_error);
-    case "suite_not_found":
-      return t(($) => $.errors.suite_not_found);
-    case "profile_not_found":
-      return t(($) => $.errors.profile_not_found);
-    case "agent_not_found":
-      return t(($) => $.errors.agent_not_found);
-    case "slug_taken":
-      return t(($) => $.errors.slug_taken_suite);
-    case "instance_list_empty":
-      return t(($) => $.errors.instance_list_empty);
-    case "bad_body":
-      return t(($) => $.errors.bad_body);
-    case "bad_id":
-      return t(($) => $.errors.bad_id);
-    case "invalid_evaluator_mode":
-      return t(($) => $.errors.invalid_evaluator_mode);
-    case "suite_or_profile_not_found":
-      return t(($) => $.errors.suite_or_profile_not_found);
-    case "task_not_found_for_instance":
-      return t(($) => $.errors.task_not_found_for_instance);
-    case "run_not_found":
-      return t(($) => $.errors.run_not_found);
-    case "display_name_required":
-      return t(($) => $.errors.display_name_required);
-    case "evaluator_id_required":
-      return t(($) => $.errors.evaluator_id_required);
-    case "adapter_kinds_required":
-      return t(($) => $.errors.adapter_kinds_required);
-    case "eval_job_not_found":
-      return t(($) => $.errors.eval_job_not_found);
-    case "adapter_unknown":
-      return t(($) => $.errors.adapter_unknown);
-    case "summary_not_available":
-      return t(($) => $.errors.summary_not_available);
-    case "unsupported_reference_url":
-      return t(($) => $.errors.unsupported_reference_url);
-    case "reference_fetch_failed":
-      return t(($) => $.errors.reference_fetch_failed);
-    case "url_required":
-      return t(($) => $.errors.url_required);
-  }
-}
+import { useBenchmarkErrorMessage } from "./error-message";
 
 /**
  * Per-suite leaderboard. The user picks a suite from the dropdown; the
@@ -261,9 +200,12 @@ export default function Leaderboard() {
 
 function ErrorBanner({ error }: { error: unknown }) {
   const { t } = useT("benchmarks");
+  const messageFn = useBenchmarkErrorMessage({
+    slug_taken: (t) => t(($) => $.errors.slug_taken_suite),
+  });
   const code = extractBenchmarkErrorCode(error);
   const message = code
-    ? messageForCode(t, code)
+    ? messageFn(code)
     : error instanceof Error
       ? error.message
       : t(($) => $.leaderboard.error_title);
