@@ -102,4 +102,4 @@ The Catalog shells out to `uvx programbench` for task metadata. The Composer ren
 
 ## Second adapter: SWE-bench
 
-`server/internal/service/benchmark/adapter/swebench.go` ships a SWE-bench adapter as a working second example. It uses the same uvx-based shell-out pattern as ProgramBench but with different task metadata, prompt template, and report format. Use it as a reference when adding your own adapter — the differences from ProgramBench (different `Kind()`, different catalog package, different report parser) are concentrated in <300 LOC.
+`server/internal/service/benchmark/adapter/swebench.go` ships a SWE-bench adapter as a working second example. It uses the same uvx-based shell-out pattern as ProgramBench but with different task metadata, prompt template, and report format. Use it as a reference when adding your own adapter — the differences from ProgramBench (different `Kind()`, different catalog package, different report parser) are concentrated in roughly 300 LOC.
