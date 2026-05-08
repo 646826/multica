@@ -117,6 +117,26 @@ export interface ListReplayEligibleIssuesResponse {
   items: EligibleIssue[];
 }
 
+/**
+ * Inbound payload for `POST /api/benchmarks/replay/fetch-reference`. The
+ * server resolves a GitHub PR URL (or a direct .patch / .diff link) into a
+ * unified diff that the UI then drops into the reference patch field.
+ */
+export interface FetchReferenceRequest {
+  url: string;
+}
+
+/**
+ * Response from `POST /api/benchmarks/replay/fetch-reference`. `patch` is
+ * the unified diff body; `source_url` echoes back the canonical URL the
+ * server settled on (either the input URL or the PR URL when given a raw
+ * .patch link).
+ */
+export interface FetchReferenceResponse {
+  patch: string;
+  source_url: string;
+}
+
 /** Wrapper returned by list endpoints. */
 export interface ListBenchmarkSuitesResponse {
   items: BenchmarkSuite[];
@@ -328,4 +348,7 @@ export type BenchmarkErrorCode =
   | "adapter_kinds_required"
   | "eval_job_not_found"
   | "adapter_unknown"
-  | "summary_not_available";
+  | "summary_not_available"
+  | "unsupported_reference_url"
+  | "reference_fetch_failed"
+  | "url_required";

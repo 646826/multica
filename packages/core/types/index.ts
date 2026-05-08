@@ -70,6 +70,8 @@ export type {
   EligibleIssue,
   CreateReplaySuiteRequest,
   ListReplayEligibleIssuesResponse,
+  FetchReferenceRequest,
+  FetchReferenceResponse,
 } from "./benchmark";
 export type {
   TimelineEntry,

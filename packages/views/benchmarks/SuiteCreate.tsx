@@ -8,6 +8,7 @@ import {
   extractBenchmarkErrorCode,
   useCreateBenchmarkSuite,
   useCreateReplaySuite,
+  useFetchReplayReference,
 } from "@multica/core/benchmarks";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
@@ -84,6 +85,12 @@ function messageForCode(t: Translator, code: BenchmarkErrorCode): string {
       return t(($) => $.errors.adapter_unknown);
     case "summary_not_available":
       return t(($) => $.errors.summary_not_available);
+    case "unsupported_reference_url":
+      return t(($) => $.errors.unsupported_reference_url);
+    case "reference_fetch_failed":
+      return t(($) => $.errors.reference_fetch_failed);
+    case "url_required":
+      return t(($) => $.errors.url_required);
   }
 }
 
@@ -531,8 +538,61 @@ function ReferencePatchEditor({
 }: ReferencePatchEditorProps) {
   const patchId = `replay-patch-${issueId}`;
   const urlId = `replay-pr-url-${issueId}`;
+  const fetchUrlId = `replay-fetch-url-${issueId}`;
+  const fetchRef = useFetchReplayReference();
+  const [fetchUrl, setFetchUrl] = useState("");
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
+  const canFetch = fetchUrl.trim().length > 0 && !fetchRef.isPending;
+
+  async function handleFetch() {
+    const trimmed = fetchUrl.trim();
+    if (!trimmed) return;
+    setFetchError(null);
+    try {
+      const res = await fetchRef.mutateAsync(trimmed);
+      onChange({ patch: res.patch, prUrl: res.source_url });
+    } catch (err) {
+      const code = extractBenchmarkErrorCode(err);
+      setFetchError(code ? messageForCode(t, code) : errorMessage(t, err));
+    }
+  }
+
   return (
     <div className="flex flex-col gap-2 pl-6">
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor={fetchUrlId}>
+          {t(($) => $.suite_create.replay_fetch_url_label)}
+        </Label>
+        <div className="flex gap-2">
+          <Input
+            id={fetchUrlId}
+            value={fetchUrl}
+            onChange={(e) => setFetchUrl(e.target.value)}
+            placeholder="https://github.com/owner/repo/pull/123"
+          />
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={handleFetch}
+            disabled={!canFetch}
+          >
+            {fetchRef.isPending
+              ? t(($) => $.suite_create.replay_fetch_pending)
+              : t(($) => $.suite_create.replay_fetch_button)}
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {t(($) => $.suite_create.replay_fetch_help)}
+        </p>
+        {fetchError && (
+          <Alert variant="destructive">
+            <AlertCircle />
+            <AlertDescription>{fetchError}</AlertDescription>
+          </Alert>
+        )}
+      </div>
       <div className="flex flex-col gap-1.5">
         <Label htmlFor={patchId}>
           {t(($) => $.suite_create.replay_reference_label)}

@@ -98,6 +98,7 @@ import type {
   SuiteSyncResult,
   CreateReplaySuiteRequest,
   ListReplayEligibleIssuesResponse,
+  FetchReferenceResponse,
 } from "../types";
 import type { OnboardingCompletionPath } from "../onboarding/types";
 import { type Logger, noopLogger } from "../logger";
@@ -1410,5 +1411,20 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify(input),
     });
+  }
+
+  // Resolves a GitHub PR URL (or direct .patch / .diff link) into a unified
+  // diff the UI can drop into the reference patch field. Server-side
+  // validation may reject the URL with `unsupported_reference_url` /
+  // `reference_fetch_failed` / `url_required` codes that the caller should
+  // map to user-facing copy via the shared messageForCode helpers.
+  async fetchReplayReference(url: string): Promise<FetchReferenceResponse> {
+    return this.fetch<FetchReferenceResponse>(
+      `/api/benchmarks/replay/fetch-reference`,
+      {
+        method: "POST",
+        body: JSON.stringify({ url }),
+      },
+    );
   }
 }

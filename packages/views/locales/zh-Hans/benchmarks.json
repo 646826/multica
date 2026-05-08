@@ -40,7 +40,10 @@
     "adapter_kinds_required": "至少需要一种适配器类型。",
     "eval_job_not_found": "未找到评估任务。",
     "adapter_unknown": "此套件的适配器已不在服务器注册。",
-    "summary_not_available": "该运行的总结尚未生成。"
+    "summary_not_available": "该运行的总结尚未生成。",
+    "unsupported_reference_url": "仅支持 GitHub PR 链接以及直接的 .patch / .diff 链接。",
+    "reference_fetch_failed": "无法从该链接获取 patch —— 请检查链接后重试。",
+    "url_required": "请输入要拉取的 URL。"
   },
   "status": {
     "queued": "排队中",
@@ -205,7 +208,11 @@
     "replay_no_picks": "至少选择一个 issue。",
     "replay_reference_label": "参考解决方案 patch",
     "replay_reference_help": "粘贴解决此 issue 的 unified diff。新 agent 的提交将与此对比评分。",
-    "replay_pr_url_label": "参考 PR URL（可选）"
+    "replay_pr_url_label": "参考 PR URL（可选）",
+    "replay_fetch_url_label": "PR 链接（可选）",
+    "replay_fetch_button": "拉取",
+    "replay_fetch_pending": "拉取中…",
+    "replay_fetch_help": "粘贴 GitHub PR 链接或直接 .patch / .diff 链接，自动填充 patch 内容。"
   },
   "suite_detail": {
     "fallback_title": "套件",

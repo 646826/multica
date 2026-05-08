@@ -87,6 +87,12 @@ function messageForCode(t: Translator, code: BenchmarkErrorCode): string {
       return t(($) => $.errors.adapter_unknown);
     case "summary_not_available":
       return t(($) => $.errors.summary_not_available);
+    case "unsupported_reference_url":
+      return t(($) => $.errors.unsupported_reference_url);
+    case "reference_fetch_failed":
+      return t(($) => $.errors.reference_fetch_failed);
+    case "url_required":
+      return t(($) => $.errors.url_required);
   }
 }
 

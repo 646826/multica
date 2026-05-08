@@ -40,7 +40,10 @@
     "adapter_kinds_required": "At least one adapter kind is required.",
     "eval_job_not_found": "Eval job not found.",
     "adapter_unknown": "This suite's adapter is no longer registered on the server.",
-    "summary_not_available": "Summary not yet computed for this run."
+    "summary_not_available": "Summary not yet computed for this run.",
+    "unsupported_reference_url": "Only GitHub PR URLs and direct .patch / .diff links are supported.",
+    "reference_fetch_failed": "Couldn't fetch the patch from that URL — check the link and try again.",
+    "url_required": "Enter a URL to fetch."
   },
   "status": {
     "queued": "Queued",
@@ -205,7 +208,11 @@
     "replay_no_picks": "Pick at least one issue.",
     "replay_reference_label": "Reference solution patch",
     "replay_reference_help": "Paste the unified diff that resolved this issue. The new agent's submission will be scored against this.",
-    "replay_pr_url_label": "Reference PR URL (optional)"
+    "replay_pr_url_label": "Reference PR URL (optional)",
+    "replay_fetch_url_label": "PR URL (optional)",
+    "replay_fetch_button": "Fetch",
+    "replay_fetch_pending": "Fetching…",
+    "replay_fetch_help": "Paste a GitHub PR URL or a direct .patch / .diff link to auto-populate the patch."
   },
   "suite_detail": {
     "fallback_title": "Suite",

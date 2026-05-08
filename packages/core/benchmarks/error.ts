@@ -22,6 +22,10 @@ const BENCHMARK_ERROR_CODES: ReadonlySet<BenchmarkErrorCode> = new Set([
   "adapter_kinds_required",
   "eval_job_not_found",
   "summary_not_available",
+  "unsupported_reference_url",
+  "reference_fetch_failed",
+  "url_required",
+  "adapter_unknown",
 ]);
 
 /**

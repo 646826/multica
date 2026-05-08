@@ -99,6 +99,14 @@ export function useCreateReplaySuite() {
   });
 }
 
+// Resolves a PR / patch URL into a unified diff. Stateless — no cache
+// invalidation needed; the caller drops the result into form state.
+export function useFetchReplayReference() {
+  return useMutation({
+    mutationFn: (url: string) => api.fetchReplayReference(url),
+  });
+}
+
 export function useCancelBenchmarkRun() {
   const wsId = useWorkspaceId();
   const qc = useQueryClient();
