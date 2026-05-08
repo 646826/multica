@@ -283,11 +283,18 @@ func main() {
 	// shutdown so any pending bumps are flushed before we exit.
 	heartbeatScheduler := handler.NewBatchedHeartbeatScheduler(queries, handler.DefaultHeartbeatBatchInterval)
 
+	// Lifecycle context for benchmark dispatchers. Shares the same lifetime
+	// as the runtime sweeper (canceled after HTTP drain) so any in-flight
+	// /api/benchmarks/runs request that just enqueued work still gets
+	// picked up by the dispatcher before it exits.
+	benchmarkCtx, benchmarkCancel := context.WithCancel(context.Background())
+
 	r := NewRouterWithOptions(pool, hub, bus, analyticsClient, storeRedis, RouterOptions{
 		HTTPMetrics:        httpMetrics,
 		DaemonHub:          daemonHub,
 		DaemonWakeup:       daemonWakeup,
 		HeartbeatScheduler: heartbeatScheduler,
+		BenchmarkCtx:       benchmarkCtx,
 	})
 
 	srv := &http.Server{
@@ -357,6 +364,7 @@ func main() {
 	// HTTP is fully drained — safe to stop the sweeper and flush the
 	// final batch of queued heartbeat bumps.
 	sweepCancel()
+	benchmarkCancel()
 	heartbeatScheduler.Stop()
 
 	if metricsServer != nil {

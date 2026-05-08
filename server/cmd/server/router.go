@@ -24,6 +24,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/service"
 	benchmarkservice "github.com/multica-ai/multica/server/internal/service/benchmark"
+	benchmarkadapter "github.com/multica-ai/multica/server/internal/service/benchmark/adapter"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -78,6 +79,13 @@ type RouterOptions struct {
 	// BatchedHeartbeatScheduler here so the caller can also drive Run/Stop;
 	// tests leave this nil and get the legacy synchronous behavior.
 	HeartbeatScheduler handler.HeartbeatScheduler
+	// BenchmarkCtx, when non-nil, is the lifecycle context used to drive the
+	// benchmark dispatcher goroutines (RunDispatcher, TaskDispatcher,
+	// TimeoutWatchdog, RunFinalizer). main.go injects a cancellable context
+	// here so dispatchers exit on graceful shutdown. Tests that exercise
+	// only HTTP handlers leave this nil; the services and handler still
+	// wire up but no background goroutine is started.
+	BenchmarkCtx context.Context
 }
 
 func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus, analyticsClient analytics.Client, rdb *redis.Client, opts RouterOptions) chi.Router {
@@ -109,13 +117,40 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
 
-	// Benchmark feature (Multica × ProgramBench Phase 0). Kept as a sibling
+	// Benchmark feature (Multica × ProgramBench Phase 1a). Kept as a sibling
 	// handler so the feature can be wired in or out independently of the
-	// monolithic *Handler.
+	// monolithic *Handler. The adapter registry is the seam between the
+	// benchmark services and the concrete adapter implementations — Phase 1a
+	// ships ProgramBench (Catalog + Composer + Parser); the Evaluator side
+	// runs in a separate binary and is registered there.
+	benchmarkRegistry := benchmarkadapter.NewRegistry()
+	benchmarkRegistry.RegisterCatalog(benchmarkadapter.NewProgramBenchCatalog())
+	benchmarkRegistry.RegisterComposer(benchmarkadapter.NewProgramBenchComposer())
+	benchmarkRegistry.RegisterParser(benchmarkadapter.NewProgramBenchParser())
+
+	benchmarkSuites := benchmarkservice.NewSuiteService(queries)
+	benchmarkProfiles := benchmarkservice.NewProfileService(queries)
+	benchmarkRuns := benchmarkservice.NewRunService(queries, pool, bus)
+	benchmarkRunDispatcher := benchmarkservice.NewRunDispatcher(queries, pool, benchmarkRegistry, bus)
+	benchmarkTaskDispatcher := benchmarkservice.NewTaskDispatcher(queries, pool, benchmarkRegistry, bus, h.TaskService)
+	benchmarkTimeoutWatchdog := benchmarkservice.NewTimeoutWatchdog(queries, bus)
+	benchmarkFinalizer := benchmarkservice.NewRunFinalizer(queries, pool, bus)
+
 	benchmarkHandler := handler.NewBenchmarkHandler(handler.BenchmarkDeps{
-		Suites:   benchmarkservice.NewSuiteService(queries),
-		Profiles: benchmarkservice.NewProfileService(queries),
+		Suites:   benchmarkSuites,
+		Profiles: benchmarkProfiles,
+		Runs:     benchmarkRuns,
 	})
+
+	// Start dispatcher goroutines when a lifecycle context is provided.
+	// Tests that only need HTTP routing leave BenchmarkCtx nil; main.go
+	// injects a cancellable context so dispatchers exit on shutdown.
+	if opts.BenchmarkCtx != nil {
+		go benchmarkRunDispatcher.Start(opts.BenchmarkCtx)
+		go benchmarkTaskDispatcher.Start(opts.BenchmarkCtx)
+		go benchmarkTimeoutWatchdog.Start(opts.BenchmarkCtx)
+		go benchmarkFinalizer.Start(opts.BenchmarkCtx)
+	}
 	if opts.DaemonWakeup != nil {
 		h.TaskService.Wakeup = opts.DaemonWakeup
 	}
@@ -451,6 +486,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Route("/{id}", func(r chi.Router) {
 						r.Get("/", benchmarkHandler.GetProfile)
 						r.Delete("/", benchmarkHandler.DeleteProfile)
+					})
+				})
+				r.Route("/runs", func(r chi.Router) {
+					r.Get("/", benchmarkHandler.ListRuns)
+					r.Post("/", benchmarkHandler.StartRun)
+					r.Route("/{id}", func(r chi.Router) {
+						r.Get("/", benchmarkHandler.GetRun)
+						r.Post("/cancel", benchmarkHandler.CancelRun)
+						r.Post("/eval-results/{instance_id}", benchmarkHandler.ImportEvalResult)
 					})
 				})
 			})
