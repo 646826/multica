@@ -4,6 +4,7 @@ import { useWorkspaceId } from "../hooks";
 import { benchmarkKeys } from "./queries";
 import type {
   CaptureProfileRequest,
+  CreateReplaySuiteRequest,
   CreateSuiteRequest,
   StartRunRequest,
 } from "../types";
@@ -79,6 +80,21 @@ export function useStartBenchmarkRun() {
     mutationFn: (input: StartRunRequest) => api.startBenchmarkRun(input),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: benchmarkKeys.runs(wsId) });
+    },
+  });
+}
+
+// Creates a Replay-mode benchmark suite from a list of completed issues
+// plus their reference solution patches. Invalidates the suites list so the
+// new suite appears immediately on the suites page.
+export function useCreateReplaySuite() {
+  const wsId = useWorkspaceId();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateReplaySuiteRequest) =>
+      api.createReplaySuite(input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: benchmarkKeys.suites(wsId) });
     },
   });
 }

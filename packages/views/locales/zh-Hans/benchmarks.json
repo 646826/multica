@@ -195,7 +195,16 @@
     "description_placeholder": "关于此套件的可选说明。",
     "submit": "创建套件",
     "submit_pending": "创建中…",
-    "cancel": "取消"
+    "cancel": "取消",
+    "mode_programbench": "ProgramBench",
+    "mode_replay": "重放（基于已完成 issue）",
+    "replay_picker_label": "选择要重放的已完成 issue",
+    "replay_picker_loading": "加载可用 issue…",
+    "replay_picker_empty": "暂无已完成 issue。先解决一些 issue 再回来。",
+    "replay_no_picks": "至少选择一个 issue。",
+    "replay_reference_label": "参考解决方案 patch",
+    "replay_reference_help": "粘贴解决此 issue 的 unified diff。新 agent 的提交将与此对比评分。",
+    "replay_pr_url_label": "参考 PR URL（可选）"
   },
   "suite_detail": {
     "fallback_title": "套件",

@@ -195,7 +195,16 @@
     "description_placeholder": "Optional notes about this suite.",
     "submit": "Create suite",
     "submit_pending": "Creating…",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "mode_programbench": "ProgramBench",
+    "mode_replay": "Replay (from completed issues)",
+    "replay_picker_label": "Pick completed issues to replay",
+    "replay_picker_loading": "Loading eligible issues…",
+    "replay_picker_empty": "No completed issues yet. Resolve some issues first.",
+    "replay_no_picks": "Pick at least one issue.",
+    "replay_reference_label": "Reference solution patch",
+    "replay_reference_help": "Paste the unified diff that resolved this issue. The new agent's submission will be scored against this.",
+    "replay_pr_url_label": "Reference PR URL (optional)"
   },
   "suite_detail": {
     "fallback_title": "Suite",

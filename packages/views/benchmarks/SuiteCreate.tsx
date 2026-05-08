@@ -1,19 +1,24 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { AlertCircle, ArrowLeft } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import {
+  benchmarkReplayEligibleIssuesOptions,
   extractBenchmarkErrorCode,
   useCreateBenchmarkSuite,
+  useCreateReplaySuite,
 } from "@multica/core/benchmarks";
+import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
-import type { BenchmarkErrorCode } from "@multica/core/types";
+import type { BenchmarkErrorCode, EligibleIssue } from "@multica/core/types";
 import {
   Alert,
   AlertDescription,
   AlertTitle,
 } from "@multica/ui/components/ui/alert";
 import { Button } from "@multica/ui/components/ui/button";
+import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
 import {
@@ -21,6 +26,7 @@ import {
   NativeSelectOption,
 } from "@multica/ui/components/ui/native-select";
 import { Textarea } from "@multica/ui/components/ui/textarea";
+import { cn } from "@multica/ui/lib/utils";
 import { useNavigation } from "../navigation";
 import { PageHeader } from "../layout/page-header";
 import { useT } from "../i18n";
@@ -28,6 +34,7 @@ import { useT } from "../i18n";
 const ADAPTER_KIND = "programbench" as const;
 
 type Translator = ReturnType<typeof useT<"benchmarks">>["t"];
+type SuiteMode = "programbench" | "replay";
 
 /**
  * Map a benchmark error code to a user-facing message for the create form.
@@ -85,26 +92,57 @@ function errorMessage(t: Translator, err: unknown): string {
   return t(($) => $.errors.create_suite_failed);
 }
 
+/** Per-issue reference patch + optional PR url, indexed by source_issue_id. */
+type ReferenceEntry = { patch: string; prUrl: string };
+
 export default function SuiteCreate() {
   const paths = useWorkspacePaths();
   const navigation = useNavigation();
+  const wsId = useWorkspaceId();
   const createSuite = useCreateBenchmarkSuite();
+  const createReplay = useCreateReplaySuite();
   const { t } = useT("benchmarks");
 
   const suitesBase = paths.benchmarkSuites();
 
+  const [mode, setMode] = useState<SuiteMode>("programbench");
   const [slug, setSlug] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [instanceIdsText, setInstanceIdsText] = useState("");
   const [description, setDescription] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
 
+  // Replay-specific state.
+  const [pickedIds, setPickedIds] = useState<Set<string>>(() => new Set());
+  const [refs, setRefs] = useState<Record<string, ReferenceEntry>>({});
+
+  const eligibleQuery = useQuery({
+    ...benchmarkReplayEligibleIssuesOptions(wsId),
+    enabled: mode === "replay",
+  });
+
   const goBack = () => navigation.push(suitesBase);
 
-  const onSubmit = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setValidationError(null);
+  const togglePicked = (id: string, next: boolean) => {
+    setPickedIds((prev) => {
+      const copy = new Set(prev);
+      if (next) copy.add(id);
+      else copy.delete(id);
+      return copy;
+    });
+    if (next && !refs[id]) {
+      setRefs((prev) => ({ ...prev, [id]: { patch: "", prUrl: "" } }));
+    }
+  };
 
+  const updateRef = (id: string, patch: Partial<ReferenceEntry>) => {
+    setRefs((prev) => ({
+      ...prev,
+      [id]: { patch: "", prUrl: "", ...prev[id], ...patch },
+    }));
+  };
+
+  const onSubmitProgramBench = async () => {
     const trimmedSlug = slug.trim();
     const trimmedName = displayName.trim();
     const instanceIds = instanceIdsText
@@ -137,12 +175,75 @@ export default function SuiteCreate() {
       });
       navigation.push(`${suitesBase}/${result.id}`);
     } catch {
-      // Error is rendered from `createSuite.error` below.
+      // Error rendered from createSuite.error below.
     }
   };
 
-  const submitError = createSuite.error
-    ? errorMessage(t, createSuite.error)
+  const onSubmitReplay = async () => {
+    const trimmedSlug = slug.trim();
+    const trimmedName = displayName.trim();
+
+    if (!trimmedSlug) {
+      setValidationError(t(($) => $.suite_create.slug_required));
+      return;
+    }
+    if (!trimmedName) {
+      setValidationError(t(($) => $.suite_create.name_required));
+      return;
+    }
+    if (pickedIds.size === 0) {
+      setValidationError(t(($) => $.suite_create.replay_no_picks));
+      return;
+    }
+
+    const instances: Array<{
+      source_issue_id: string;
+      reference_solution: string;
+      reference_pr_url?: string;
+    }> = [];
+    for (const id of pickedIds) {
+      const entry = refs[id];
+      const patch = entry?.patch.trim() ?? "";
+      if (!patch) {
+        setValidationError(t(($) => $.suite_create.replay_no_picks));
+        return;
+      }
+      const prUrl = entry?.prUrl.trim() ?? "";
+      instances.push({
+        source_issue_id: id,
+        reference_solution: patch,
+        ...(prUrl ? { reference_pr_url: prUrl } : {}),
+      });
+    }
+
+    const trimmedDescription = description.trim();
+
+    try {
+      const result = await createReplay.mutateAsync({
+        slug: trimmedSlug,
+        display_name: trimmedName,
+        instances,
+        ...(trimmedDescription ? { description: trimmedDescription } : {}),
+      });
+      navigation.push(`${suitesBase}/${result.id}`);
+    } catch {
+      // Error rendered from createReplay.error below.
+    }
+  };
+
+  const onSubmit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setValidationError(null);
+    if (mode === "programbench") {
+      await onSubmitProgramBench();
+    } else {
+      await onSubmitReplay();
+    }
+  };
+
+  const activeMutation = mode === "programbench" ? createSuite : createReplay;
+  const submitError = activeMutation.error
+    ? errorMessage(t, activeMutation.error)
     : null;
   const inlineError = validationError ?? submitError;
 
@@ -168,6 +269,31 @@ export default function SuiteCreate() {
           onSubmit={onSubmit}
           className="flex w-full max-w-2xl flex-col gap-5"
         >
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant={mode === "programbench" ? "default" : "outline"}
+              onClick={() => {
+                setMode("programbench");
+                setValidationError(null);
+              }}
+            >
+              {t(($) => $.suite_create.mode_programbench)}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={mode === "replay" ? "default" : "outline"}
+              onClick={() => {
+                setMode("replay");
+                setValidationError(null);
+              }}
+            >
+              {t(($) => $.suite_create.mode_replay)}
+            </Button>
+          </div>
+
           {inlineError && (
             <Alert variant="destructive">
               <AlertCircle />
@@ -206,44 +332,60 @@ export default function SuiteCreate() {
             />
           </div>
 
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="suite-adapter">
-              {t(($) => $.suite_create.adapter_label)}
-            </Label>
-            <NativeSelect
-              id="suite-adapter"
-              value={ADAPTER_KIND}
-              onChange={() => {
-                /* single option for v1; no-op */
-              }}
-              className="w-64"
-            >
-              <NativeSelectOption value={ADAPTER_KIND}>
-                {ADAPTER_KIND}
-              </NativeSelectOption>
-            </NativeSelect>
-            <p className="text-xs text-muted-foreground">
-              {t(($) => $.suite_create.adapter_help)}
-            </p>
-          </div>
+          {mode === "programbench" && (
+            <>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="suite-adapter">
+                  {t(($) => $.suite_create.adapter_label)}
+                </Label>
+                <NativeSelect
+                  id="suite-adapter"
+                  value={ADAPTER_KIND}
+                  onChange={() => {
+                    /* single option for v1; no-op */
+                  }}
+                  className="w-64"
+                >
+                  <NativeSelectOption value={ADAPTER_KIND}>
+                    {ADAPTER_KIND}
+                  </NativeSelectOption>
+                </NativeSelect>
+                <p className="text-xs text-muted-foreground">
+                  {t(($) => $.suite_create.adapter_help)}
+                </p>
+              </div>
 
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="suite-instances">
-              {t(($) => $.suite_create.instances_label)}
-            </Label>
-            <Textarea
-              id="suite-instances"
-              value={instanceIdsText}
-              onChange={(e) => setInstanceIdsText(e.target.value)}
-              placeholder={t(($) => $.suite_create.instances_placeholder)}
-              rows={6}
-              required
-              className="font-mono text-xs"
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="suite-instances">
+                  {t(($) => $.suite_create.instances_label)}
+                </Label>
+                <Textarea
+                  id="suite-instances"
+                  value={instanceIdsText}
+                  onChange={(e) => setInstanceIdsText(e.target.value)}
+                  placeholder={t(($) => $.suite_create.instances_placeholder)}
+                  rows={6}
+                  required
+                  className="font-mono text-xs"
+                />
+                <p className="text-xs text-muted-foreground">
+                  {t(($) => $.suite_create.instances_help)}
+                </p>
+              </div>
+            </>
+          )}
+
+          {mode === "replay" && (
+            <ReplayPicker
+              t={t}
+              loading={eligibleQuery.isLoading}
+              issues={eligibleQuery.data ?? []}
+              pickedIds={pickedIds}
+              onToggle={togglePicked}
+              refs={refs}
+              onUpdateRef={updateRef}
             />
-            <p className="text-xs text-muted-foreground">
-              {t(($) => $.suite_create.instances_help)}
-            </p>
-          </div>
+          )}
 
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="suite-description">
@@ -262,9 +404,9 @@ export default function SuiteCreate() {
             <Button
               type="submit"
               size="sm"
-              disabled={createSuite.isPending}
+              disabled={activeMutation.isPending}
             >
-              {createSuite.isPending
+              {activeMutation.isPending
                 ? t(($) => $.suite_create.submit_pending)
                 : t(($) => $.suite_create.submit)}
             </Button>
@@ -273,12 +415,148 @@ export default function SuiteCreate() {
               variant="ghost"
               size="sm"
               onClick={goBack}
-              disabled={createSuite.isPending}
+              disabled={activeMutation.isPending}
             >
               {t(($) => $.suite_create.cancel)}
             </Button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+interface ReplayPickerProps {
+  t: Translator;
+  loading: boolean;
+  issues: EligibleIssue[];
+  pickedIds: Set<string>;
+  onToggle: (id: string, next: boolean) => void;
+  refs: Record<string, ReferenceEntry>;
+  onUpdateRef: (id: string, patch: Partial<ReferenceEntry>) => void;
+}
+
+function ReplayPicker({
+  t,
+  loading,
+  issues,
+  pickedIds,
+  onToggle,
+  refs,
+  onUpdateRef,
+}: ReplayPickerProps) {
+  // Stable ordering: most recently updated first; the server typically
+  // returns rows already sorted, but we re-sort defensively so the UI is
+  // not at the mercy of the backend's `ORDER BY`.
+  const sorted = useMemo(
+    () =>
+      [...issues].sort((a, b) =>
+        a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : 0,
+      ),
+    [issues],
+  );
+
+  return (
+    <div className="flex flex-col gap-2">
+      <Label>{t(($) => $.suite_create.replay_picker_label)}</Label>
+      {loading ? (
+        <p className="text-xs text-muted-foreground">
+          {t(($) => $.suite_create.replay_picker_loading)}
+        </p>
+      ) : sorted.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          {t(($) => $.suite_create.replay_picker_empty)}
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-3 rounded-md border p-3">
+          {sorted.map((issue) => {
+            const checked = pickedIds.has(issue.id);
+            const entry = refs[issue.id];
+            return (
+              <li
+                key={issue.id}
+                className={cn(
+                  "flex flex-col gap-2 rounded-sm",
+                  checked && "bg-muted/30 p-2",
+                )}
+              >
+                <label className="flex items-start gap-2 text-sm">
+                  <Checkbox
+                    checked={checked}
+                    onCheckedChange={(next) =>
+                      onToggle(issue.id, next === true)
+                    }
+                    className="mt-0.5"
+                  />
+                  <span className="flex flex-col">
+                    <span className="font-medium">
+                      #{issue.number} {issue.title}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {issue.status}
+                    </span>
+                  </span>
+                </label>
+                {checked && (
+                  <ReferencePatchEditor
+                    t={t}
+                    issueId={issue.id}
+                    value={entry ?? { patch: "", prUrl: "" }}
+                    onChange={(p) => onUpdateRef(issue.id, p)}
+                  />
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+interface ReferencePatchEditorProps {
+  t: Translator;
+  issueId: string;
+  value: ReferenceEntry;
+  onChange: (patch: Partial<ReferenceEntry>) => void;
+}
+
+function ReferencePatchEditor({
+  t,
+  issueId,
+  value,
+  onChange,
+}: ReferencePatchEditorProps) {
+  const patchId = `replay-patch-${issueId}`;
+  const urlId = `replay-pr-url-${issueId}`;
+  return (
+    <div className="flex flex-col gap-2 pl-6">
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor={patchId}>
+          {t(($) => $.suite_create.replay_reference_label)}
+        </Label>
+        <Textarea
+          id={patchId}
+          value={value.patch}
+          onChange={(e) => onChange({ patch: e.target.value })}
+          rows={6}
+          required
+          className="font-mono text-xs"
+        />
+        <p className="text-xs text-muted-foreground">
+          {t(($) => $.suite_create.replay_reference_help)}
+        </p>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor={urlId}>
+          {t(($) => $.suite_create.replay_pr_url_label)}
+        </Label>
+        <Input
+          id={urlId}
+          value={value.prUrl}
+          onChange={(e) => onChange({ prUrl: e.target.value })}
+          placeholder="https://github.com/owner/repo/pull/123"
+        />
       </div>
     </div>
   );

@@ -30,6 +30,8 @@ export const benchmarkKeys = {
     ["benchmarks", wsId, "tasks", runID] as const,
   summary: (wsId: string, runID: string) =>
     ["benchmarks", wsId, "summary", runID] as const,
+  replayEligible: (wsId: string) =>
+    ["benchmarks", wsId, "replay", "eligible"] as const,
 };
 
 export function benchmarkSuiteListOptions(wsId: string) {
@@ -112,6 +114,18 @@ export function benchmarkRunTasksOptions(wsId: string, runID: string) {
  * circuit retries on any 404. Callers that want to refetch when a
  * run completes should invalidate this key on the run-status event.
  */
+/**
+ * Lists completed issues in the workspace eligible to seed a Replay suite.
+ * Backs the issue picker on `SuiteCreate` when mode === "replay". Workspace
+ * scoping is server-side; `wsId` participates in the cache key only.
+ */
+export function benchmarkReplayEligibleIssuesOptions(wsId: string) {
+  return queryOptions({
+    queryKey: benchmarkKeys.replayEligible(wsId),
+    queryFn: () => api.listReplayEligibleIssues().then((r) => r.items),
+  });
+}
+
 export function benchmarkRunSummaryOptions(wsId: string, runID: string) {
   return queryOptions({
     queryKey: benchmarkKeys.summary(wsId, runID),

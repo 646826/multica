@@ -84,6 +84,39 @@ export interface SuiteSyncResult {
   unresolved: string[];
 }
 
+/**
+ * One row returned by `GET /api/benchmarks/replay/eligible-issues`. Lists
+ * completed issues in the workspace that can be replayed as a benchmark
+ * instance. Field names mirror the Go DTO.
+ */
+export interface EligibleIssue {
+  id: string;
+  number: number;
+  title: string;
+  status: string;
+  updated_at: string;
+}
+
+/**
+ * Inbound payload for `POST /api/benchmarks/replay/suites`. Each entry in
+ * `instances` pins a completed issue plus the reference solution patch the
+ * server stores for evaluator scoring.
+ */
+export interface CreateReplaySuiteRequest {
+  slug: string;
+  display_name: string;
+  description?: string;
+  instances: Array<{
+    source_issue_id: string;
+    reference_solution: string;
+    reference_pr_url?: string;
+  }>;
+}
+
+export interface ListReplayEligibleIssuesResponse {
+  items: EligibleIssue[];
+}
+
 /** Wrapper returned by list endpoints. */
 export interface ListBenchmarkSuitesResponse {
   items: BenchmarkSuite[];

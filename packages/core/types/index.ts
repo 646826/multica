@@ -67,6 +67,9 @@ export type {
   BenchmarkRunSummary,
   ListBenchmarkRunTasksResponse,
   SuiteSyncResult,
+  EligibleIssue,
+  CreateReplaySuiteRequest,
+  ListReplayEligibleIssuesResponse,
 } from "./benchmark";
 export type {
   TimelineEntry,

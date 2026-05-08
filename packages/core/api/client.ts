@@ -96,6 +96,8 @@ import type {
   ListBenchmarkRunTasksResponse,
   BenchmarkRunSummary,
   SuiteSyncResult,
+  CreateReplaySuiteRequest,
+  ListReplayEligibleIssuesResponse,
 } from "../types";
 import type { OnboardingCompletionPath } from "../onboarding/types";
 import { type Logger, noopLogger } from "../logger";
@@ -1386,5 +1388,27 @@ export class ApiClient {
     return this.fetch<BenchmarkRunSummary>(
       `/api/benchmarks/runs/${runID}/summary`,
     );
+  }
+
+  // Lists completed issues in the workspace eligible to seed a Replay
+  // benchmark suite. The server scopes by the auth context's workspace.
+  async listReplayEligibleIssues(
+    limit = 50,
+  ): Promise<ListReplayEligibleIssuesResponse> {
+    return this.fetch<ListReplayEligibleIssuesResponse>(
+      `/api/benchmarks/replay/eligible-issues?limit=${limit}`,
+    );
+  }
+
+  // Creates a Replay benchmark suite from a list of completed issues plus
+  // their reference solution patches. The created suite's adapter_kind is
+  // `multica_replay`; the server pins per-instance metadata internally.
+  async createReplaySuite(
+    input: CreateReplaySuiteRequest,
+  ): Promise<BenchmarkSuite> {
+    return this.fetch<BenchmarkSuite>(`/api/benchmarks/replay/suites`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
   }
 }
