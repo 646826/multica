@@ -151,4 +151,12 @@ export type BenchmarkErrorCode =
   | "suite_not_found"
   | "profile_not_found"
   | "slug_taken"
-  | "internal_error";
+  | "internal_error"
+  | "invalid_evaluator_mode"
+  | "suite_or_profile_not_found"
+  | "task_not_found_for_instance"
+  | "run_not_found"
+  | "display_name_required"
+  | "evaluator_id_required"
+  | "adapter_kinds_required"
+  | "eval_job_not_found";

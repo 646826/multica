@@ -1,10 +1,5 @@
 "use client";
 
-// English literal strings live here intentionally for Phase 1c-T05; the
-// dedicated i18n pass for runs UI is tracked as P1c-T06 and will replace
-// every hard-coded label below with `useT("benchmarks").t(...)` lookups.
-/* eslint-disable i18next/no-literal-string */
-
 import { useMemo, useState, type FormEvent } from "react";
 import { AlertCircle, ArrowLeft } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -37,58 +32,72 @@ import {
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { useNavigation } from "../navigation";
 import { PageHeader } from "../layout/page-header";
+import { useT } from "../i18n";
 
 type EvaluatorMode = "managed" | "imported";
 
+type Translator = ReturnType<typeof useT<"benchmarks">>["t"];
+
 /**
- * Map a benchmark error code to a user-facing English message for the start
- * run form. The full union is covered so a new code becomes a compile error.
- *
- * Two codes called out by the spec — `invalid_evaluator_mode` and
- * `suite_or_profile_not_found` — are NOT yet members of the
- * `BenchmarkErrorCode` union. Until the backend adds them, we surface the
- * closest existing codes (`bad_body` for the former, `suite_not_found` /
- * `profile_not_found` for the latter) with friendly wording. T06 will swap
- * this for the shared `useT` translator pattern.
+ * Map a benchmark error code to a user-facing message for the start run form.
+ * The full union is covered exhaustively so a new code in the union becomes a
+ * type error rather than a silent fall-through.
  */
-function messageForCode(code: BenchmarkErrorCode): string {
+function messageForCode(t: Translator, code: BenchmarkErrorCode): string {
   switch (code) {
     case "unauthenticated":
-      return "You must be signed in to start a run.";
+      return t(($) => $.errors.unauthenticated);
     case "workspace_required":
     case "bad_workspace_id":
     case "bad_user_id":
-      return "Workspace context is missing or invalid.";
+      return t(($) => $.errors.workspace_context_missing);
     case "bad_id":
-      return "Invalid id.";
+      return t(($) => $.errors.bad_id);
     case "bad_body":
-      return "The form contains invalid values. Please check evaluator mode and other fields.";
+      return t(($) => $.errors.bad_body);
     case "internal_error":
-      return "Something went wrong on the server.";
+      return t(($) => $.errors.internal_error);
     case "suite_not_found":
-      return "Selected suite was not found. It may have been deleted.";
+      return t(($) => $.errors.suite_not_found);
     case "profile_not_found":
-      return "Selected profile was not found. It may have been deleted.";
+      return t(($) => $.errors.profile_not_found);
     case "agent_not_found":
-      return "Agent not found.";
+      return t(($) => $.errors.agent_not_found);
     case "slug_taken":
-      return "That slug is already taken.";
+      return t(($) => $.errors.slug_taken_suite);
     case "instance_list_empty":
-      return "Suite has no instances.";
+      return t(($) => $.errors.instance_list_empty);
+    case "invalid_evaluator_mode":
+      return t(($) => $.errors.invalid_evaluator_mode);
+    case "suite_or_profile_not_found":
+      return t(($) => $.errors.suite_or_profile_not_found);
+    case "task_not_found_for_instance":
+      return t(($) => $.errors.task_not_found_for_instance);
+    case "run_not_found":
+      return t(($) => $.errors.run_not_found);
+    case "display_name_required":
+      return t(($) => $.errors.display_name_required);
+    case "evaluator_id_required":
+      return t(($) => $.errors.evaluator_id_required);
+    case "adapter_kinds_required":
+      return t(($) => $.errors.adapter_kinds_required);
+    case "eval_job_not_found":
+      return t(($) => $.errors.eval_job_not_found);
   }
 }
 
-function errorMessage(err: unknown): string {
+function errorMessage(t: Translator, err: unknown): string {
   const code = extractBenchmarkErrorCode(err);
-  if (code) return messageForCode(code);
+  if (code) return messageForCode(t, code);
   if (err instanceof Error && err.message) return err.message;
-  return "Failed to start run.";
+  return t(($) => $.errors.internal_error);
 }
 
 export default function StartRunWizard() {
   const wsId = useWorkspaceId();
   const paths = useWorkspacePaths();
   const navigation = useNavigation();
+  const { t } = useT("benchmarks");
   const startRun = useStartBenchmarkRun();
 
   const runsBase = paths.benchmarkRuns();
@@ -131,15 +140,17 @@ export default function StartRunWizard() {
     const trimmedName = displayName.trim();
 
     if (!suiteId) {
-      setValidationError("Please select a suite.");
+      setValidationError(t(($) => $.start_run.validation_suite_required));
       return;
     }
     if (!profileId) {
-      setValidationError("Please select a profile.");
+      setValidationError(t(($) => $.start_run.validation_profile_required));
       return;
     }
     if (!trimmedName) {
-      setValidationError("Display name is required.");
+      setValidationError(
+        t(($) => $.start_run.validation_display_name_required),
+      );
       return;
     }
 
@@ -160,7 +171,7 @@ export default function StartRunWizard() {
     }
   };
 
-  const submitError = startRun.error ? errorMessage(startRun.error) : null;
+  const submitError = startRun.error ? errorMessage(t, startRun.error) : null;
   const inlineError = validationError ?? submitError;
 
   return (
@@ -170,12 +181,14 @@ export default function StartRunWizard() {
           type="button"
           variant="ghost"
           size="icon"
-          aria-label="Back to runs"
+          aria-label={t(($) => $.run_detail.back)}
           onClick={goBack}
         >
           <ArrowLeft className="h-4 w-4" />
         </Button>
-        <h1 className="text-sm font-medium">Start run</h1>
+        <h1 className="text-sm font-medium">
+          {t(($) => $.start_run.page_title)}
+        </h1>
       </PageHeader>
 
       <div className="flex flex-1 min-h-0 flex-col overflow-auto p-6">
@@ -186,13 +199,15 @@ export default function StartRunWizard() {
           {inlineError && (
             <Alert variant="destructive">
               <AlertCircle />
-              <AlertTitle>Could not start run</AlertTitle>
+              <AlertTitle>{t(($) => $.start_run.page_title)}</AlertTitle>
               <AlertDescription>{inlineError}</AlertDescription>
             </Alert>
           )}
 
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="run-suite">Suite</Label>
+            <Label htmlFor="run-suite">
+              {t(($) => $.start_run.field_suite)}
+            </Label>
             <NativeSelect
               id="run-suite"
               value={suiteId}
@@ -201,11 +216,7 @@ export default function StartRunWizard() {
               required
             >
               <NativeSelectOption value="">
-                {suitesLoading
-                  ? "Loading suites…"
-                  : suites.length === 0
-                    ? "No suites available"
-                    : "Select a suite…"}
+                {t(($) => $.start_run.field_suite_placeholder)}
               </NativeSelectOption>
               {suites.map((s) => (
                 <NativeSelectOption key={s.id} value={s.id}>
@@ -216,7 +227,9 @@ export default function StartRunWizard() {
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="run-profile">Profile</Label>
+            <Label htmlFor="run-profile">
+              {t(($) => $.start_run.field_profile)}
+            </Label>
             <NativeSelect
               id="run-profile"
               value={profileId}
@@ -225,11 +238,7 @@ export default function StartRunWizard() {
               required
             >
               <NativeSelectOption value="">
-                {profilesLoading
-                  ? "Loading profiles…"
-                  : profiles.length === 0
-                    ? "No profiles available"
-                    : "Select a profile…"}
+                {t(($) => $.start_run.field_profile_placeholder)}
               </NativeSelectOption>
               {profiles.map((p) => (
                 <NativeSelectOption key={p.id} value={p.id}>
@@ -240,29 +249,31 @@ export default function StartRunWizard() {
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="run-name">Display name</Label>
+            <Label htmlFor="run-name">
+              {t(($) => $.start_run.field_display_name)}
+            </Label>
             <Input
               id="run-name"
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="e.g. Nightly run — 2026-05-07"
               required
             />
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="run-notes">Notes</Label>
+            <Label htmlFor="run-notes">
+              {t(($) => $.start_run.field_notes)}
+            </Label>
             <Textarea
               id="run-notes"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              placeholder="Optional context for this run"
               rows={3}
             />
           </div>
 
           <div className="flex flex-col gap-2">
-            <Label>Evaluator mode</Label>
+            <Label>{t(($) => $.start_run.field_mode)}</Label>
             <RadioGroup
               value={evaluatorMode}
               onValueChange={(v) => setEvaluatorMode(v as EvaluatorMode)}
@@ -271,20 +282,18 @@ export default function StartRunWizard() {
               <label className="flex items-start gap-2 text-sm">
                 <RadioGroupItem value="imported" className="mt-0.5" />
                 <span className="flex flex-col">
-                  <span>Imported</span>
+                  <span>{t(($) => $.run_detail.mode_imported)}</span>
                   <span className="text-xs text-muted-foreground">
-                    Results are uploaded externally. Works without an
-                    evaluator pod.
+                    {t(($) => $.start_run.field_mode_imported)}
                   </span>
                 </span>
               </label>
               <label className="flex items-start gap-2 text-sm">
                 <RadioGroupItem value="managed" className="mt-0.5" />
                 <span className="flex flex-col">
-                  <span>Managed</span>
+                  <span>{t(($) => $.run_detail.mode_managed)}</span>
                   <span className="text-xs text-muted-foreground">
-                    Server-driven evaluation. Requires a running evaluator
-                    pod.
+                    {t(($) => $.start_run.field_mode_managed)}
                   </span>
                 </span>
               </label>
@@ -292,7 +301,9 @@ export default function StartRunWizard() {
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="run-baseline">Compare with (optional)</Label>
+            <Label htmlFor="run-baseline">
+              {t(($) => $.start_run.field_baseline)}
+            </Label>
             <NativeSelect
               id="run-baseline"
               value={baseRunId}
@@ -300,11 +311,7 @@ export default function StartRunWizard() {
               disabled={!suiteId || baselineCandidates.length === 0}
             >
               <NativeSelectOption value="">
-                {!suiteId
-                  ? "Select a suite first"
-                  : baselineCandidates.length === 0
-                    ? "No completed runs for this suite"
-                    : "None"}
+                {t(($) => $.start_run.field_baseline_placeholder)}
               </NativeSelectOption>
               {baselineCandidates.map((r) => (
                 <NativeSelectOption key={r.id} value={r.id}>
@@ -313,14 +320,15 @@ export default function StartRunWizard() {
               ))}
             </NativeSelect>
             <p className="text-xs text-muted-foreground">
-              Pick a previous complete run of the same suite to baseline
-              against.
+              {t(($) => $.start_run.field_baseline_help)}
             </p>
           </div>
 
           <div className="flex items-center gap-2 pt-2">
             <Button type="submit" size="sm" disabled={startRun.isPending}>
-              {startRun.isPending ? "Starting…" : "Start run"}
+              {startRun.isPending
+                ? t(($) => $.start_run.submit_pending)
+                : t(($) => $.start_run.submit_create)}
             </Button>
             <Button
               type="button"
@@ -329,7 +337,7 @@ export default function StartRunWizard() {
               onClick={goBack}
               disabled={startRun.isPending}
             >
-              Cancel
+              {t(($) => $.suite_create.cancel)}
             </Button>
           </div>
         </form>

@@ -57,6 +57,22 @@ function messageForCode(t: Translator, code: BenchmarkErrorCode): string {
       return t(($) => $.errors.suite_not_found);
     case "profile_not_found":
       return t(($) => $.errors.profile_not_found);
+    case "invalid_evaluator_mode":
+      return t(($) => $.errors.invalid_evaluator_mode);
+    case "suite_or_profile_not_found":
+      return t(($) => $.errors.suite_or_profile_not_found);
+    case "task_not_found_for_instance":
+      return t(($) => $.errors.task_not_found_for_instance);
+    case "run_not_found":
+      return t(($) => $.errors.run_not_found);
+    case "display_name_required":
+      return t(($) => $.errors.display_name_required);
+    case "evaluator_id_required":
+      return t(($) => $.errors.evaluator_id_required);
+    case "adapter_kinds_required":
+      return t(($) => $.errors.adapter_kinds_required);
+    case "eval_job_not_found":
+      return t(($) => $.errors.eval_job_not_found);
   }
 }
 

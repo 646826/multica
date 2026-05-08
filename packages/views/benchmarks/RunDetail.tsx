@@ -1,10 +1,5 @@
 "use client";
 
-// English literal strings live here intentionally for Phase 1c-T04. The
-// dedicated i18n pass for runs UI is tracked as P1c-T06 and will replace
-// every hard-coded label below with `useT("benchmarks").t(...)` lookups.
-/* eslint-disable i18next/no-literal-string */
-
 import { AlertCircle, ArrowLeft } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -25,45 +20,64 @@ import { Button } from "@multica/ui/components/ui/button";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { useNavigation, AppLink } from "../navigation";
 import { PageHeader } from "../layout/page-header";
+import { useT } from "../i18n";
 import { StatusPill } from "./StatusPill";
 
+type Translator = ReturnType<typeof useT<"benchmarks">>["t"];
+
 /**
- * Map a benchmark error code to a user-facing English message for the run
- * detail view. The full union is covered so a new code becomes a compile
- * error. T06 will swap this for the shared `useT` translator pattern.
+ * Map a benchmark error code to a user-facing message for the run detail
+ * view. The full union is covered exhaustively so a new code in the union
+ * becomes a type error rather than a silent fall-through.
  */
-function messageForCode(code: BenchmarkErrorCode): string {
+function messageForCode(t: Translator, code: BenchmarkErrorCode): string {
   switch (code) {
     case "unauthenticated":
-      return "You must be signed in to view this run.";
+      return t(($) => $.errors.unauthenticated);
     case "workspace_required":
     case "bad_workspace_id":
     case "bad_user_id":
-      return "Workspace context is missing or invalid.";
+      return t(($) => $.errors.workspace_context_missing);
     case "bad_id":
-      return "Invalid run id.";
+      return t(($) => $.errors.bad_id);
     case "internal_error":
-      return "Something went wrong on the server.";
+      return t(($) => $.errors.internal_error);
     case "suite_not_found":
-      return "Suite not found.";
+      return t(($) => $.errors.suite_not_found);
     case "profile_not_found":
-      return "Profile not found.";
+      return t(($) => $.errors.profile_not_found);
     case "agent_not_found":
-      return "Agent not found.";
+      return t(($) => $.errors.agent_not_found);
     case "slug_taken":
-      return "That slug is already taken.";
+      return t(($) => $.errors.slug_taken_suite);
     case "instance_list_empty":
-      return "Suite has no instances.";
+      return t(($) => $.errors.instance_list_empty);
     case "bad_body":
-      return "Invalid request body.";
+      return t(($) => $.errors.bad_body);
+    case "invalid_evaluator_mode":
+      return t(($) => $.errors.invalid_evaluator_mode);
+    case "suite_or_profile_not_found":
+      return t(($) => $.errors.suite_or_profile_not_found);
+    case "task_not_found_for_instance":
+      return t(($) => $.errors.task_not_found_for_instance);
+    case "run_not_found":
+      return t(($) => $.errors.run_not_found);
+    case "display_name_required":
+      return t(($) => $.errors.display_name_required);
+    case "evaluator_id_required":
+      return t(($) => $.errors.evaluator_id_required);
+    case "adapter_kinds_required":
+      return t(($) => $.errors.adapter_kinds_required);
+    case "eval_job_not_found":
+      return t(($) => $.errors.eval_job_not_found);
   }
 }
 
-function errorMessage(err: unknown): string {
+function errorMessage(t: Translator, err: unknown): string {
   const code = extractBenchmarkErrorCode(err);
-  if (code) return messageForCode(code);
+  if (code) return messageForCode(t, code);
   if (err instanceof Error && err.message) return err.message;
-  return "Failed to load run.";
+  return t(($) => $.run_detail.error_title);
 }
 
 /**
@@ -85,6 +99,7 @@ function HeaderBar({
   onBack: () => void;
   action?: React.ReactNode;
 }) {
+  const { t } = useT("benchmarks");
   return (
     <PageHeader className="justify-between gap-2 px-5">
       <div className="flex items-center gap-2">
@@ -92,7 +107,7 @@ function HeaderBar({
           type="button"
           variant="ghost"
           size="icon"
-          aria-label="Back to runs"
+          aria-label={t(($) => $.run_detail.back)}
           onClick={onBack}
         >
           <ArrowLeft className="h-4 w-4" />
@@ -105,9 +120,10 @@ function HeaderBar({
 }
 
 function LoadingState({ onBack }: { onBack: () => void }) {
+  const { t } = useT("benchmarks");
   return (
     <div className="flex flex-1 min-h-0 flex-col">
-      <HeaderBar title="Run" onBack={onBack} />
+      <HeaderBar title={t(($) => $.run_detail.loading)} onBack={onBack} />
       <div className="flex flex-1 min-h-0 flex-col gap-4 p-6">
         <Skeleton className="h-8 w-64 rounded-md" />
         <Skeleton className="h-4 w-40 rounded-md" />
@@ -122,15 +138,20 @@ function LoadingState({ onBack }: { onBack: () => void }) {
 }
 
 function ModeBadge({ mode }: { mode: BenchmarkRun["evaluator_mode"] }) {
+  const { t } = useT("benchmarks");
   const cls =
     mode === "managed"
       ? "bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-200"
       : "bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-200";
+  const label =
+    mode === "managed"
+      ? t(($) => $.run_detail.mode_managed)
+      : t(($) => $.run_detail.mode_imported);
   return (
     <span
       className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${cls}`}
     >
-      {mode}
+      {label}
     </span>
   );
 }
@@ -159,33 +180,34 @@ function Metadata({
   run: BenchmarkRun;
   baseRunHref: string | null;
 }) {
+  const { t } = useT("benchmarks");
   return (
     <section className="rounded-lg border bg-background p-4">
-      <MetadataRow label="Suite ID">
+      <MetadataRow label={t(($) => $.run_detail.metadata_suite_id)}>
         <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
           {run.suite_id}
         </code>
       </MetadataRow>
-      <MetadataRow label="Profile ID">
+      <MetadataRow label={t(($) => $.run_detail.metadata_profile_id)}>
         <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
           {run.profile_id}
         </code>
       </MetadataRow>
-      <MetadataRow label="Mode">
+      <MetadataRow label={t(($) => $.run_detail.metadata_mode)}>
         <ModeBadge mode={run.evaluator_mode} />
       </MetadataRow>
-      <MetadataRow label="Submission timeout">
+      <MetadataRow label={t(($) => $.run_detail.metadata_timeout)}>
         <span className="font-mono tabular-nums text-xs">
           {formatTimeout(run.submission_timeout_seconds)}
         </span>
       </MetadataRow>
       {run.adapter_version && (
-        <MetadataRow label="Adapter version">
+        <MetadataRow label={t(($) => $.run_detail.metadata_adapter_version)}>
           <Badge variant="outline">{run.adapter_version}</Badge>
         </MetadataRow>
       )}
       {run.base_run_id && baseRunHref && (
-        <MetadataRow label="Base run">
+        <MetadataRow label={t(($) => $.run_detail.metadata_base_run)}>
           <AppLink
             href={baseRunHref}
             className="font-mono text-xs text-primary underline-offset-2 hover:underline"
@@ -202,6 +224,7 @@ export default function RunDetail({ runId }: { runId: string }) {
   const wsId = useWorkspaceId();
   const paths = useWorkspacePaths();
   const navigation = useNavigation();
+  const { t } = useT("benchmarks");
 
   const runsBase = paths.benchmarkRuns();
   const goBack = () => navigation.push(runsBase);
@@ -219,20 +242,25 @@ export default function RunDetail({ runId }: { runId: string }) {
   }
 
   if (error || !run) {
-    const message = error ? errorMessage(error) : "Run not found.";
+    const message = error
+      ? errorMessage(t, error)
+      : t(($) => $.errors.run_not_found);
     return (
       <div className="flex flex-1 min-h-0 flex-col">
-        <HeaderBar title="Run" onBack={goBack} />
+        <HeaderBar
+          title={t(($) => $.run_detail.error_title)}
+          onBack={goBack}
+        />
         <div className="flex flex-1 min-h-0 flex-col gap-4 p-6">
           <Alert variant="destructive">
             <AlertCircle />
-            <AlertTitle>Failed to load run</AlertTitle>
+            <AlertTitle>{t(($) => $.run_detail.error_title)}</AlertTitle>
             <AlertDescription>{message}</AlertDescription>
           </Alert>
           <div>
             <Button type="button" variant="ghost" size="sm" onClick={goBack}>
               <ArrowLeft className="h-3 w-3" />
-              Back to runs
+              {t(($) => $.run_detail.back)}
             </Button>
           </div>
         </div>
@@ -246,9 +274,7 @@ export default function RunDetail({ runId }: { runId: string }) {
     run.status === "evaluating";
 
   const onCancel = () => {
-    if (
-      window.confirm("Cancel this run? In-flight tasks will be aborted.")
-    ) {
+    if (window.confirm(t(($) => $.run_detail.cancel_confirm))) {
       cancelMut.mutate(run.id);
     }
   };
@@ -273,7 +299,9 @@ export default function RunDetail({ runId }: { runId: string }) {
               disabled={cancelMut.isPending}
               onClick={onCancel}
             >
-              {cancelMut.isPending ? "Canceling…" : "Cancel run"}
+              {cancelMut.isPending
+                ? t(($) => $.run_detail.cancel_button_pending)
+                : t(($) => $.run_detail.cancel_button)}
             </Button>
           ) : null
         }
@@ -293,7 +321,9 @@ export default function RunDetail({ runId }: { runId: string }) {
 
         {notes && (
           <section>
-            <h3 className="mb-1 text-sm font-medium">Notes</h3>
+            <h3 className="mb-1 text-sm font-medium">
+              {t(($) => $.run_detail.notes_title)}
+            </h3>
             <p className="whitespace-pre-wrap text-sm text-muted-foreground">
               {run.notes}
             </p>
@@ -301,12 +331,12 @@ export default function RunDetail({ runId }: { runId: string }) {
         )}
 
         <section className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
-          Per-task results will be available in a future iteration.
+          {t(($) => $.run_detail.tasks_placeholder)}
         </section>
 
         {run.status === "complete" && (
           <section className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
-            Summary computed; rendering will be added in a future iteration.
+            {t(($) => $.run_detail.summary_placeholder)}
           </section>
         )}
       </div>
