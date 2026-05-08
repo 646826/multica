@@ -1,0 +1,101 @@
+---
+title: Writing a benchmark adapter
+description: Extend Multica benchmarks to a new task source by implementing the four adapter interfaces.
+---
+
+# Writing a benchmark adapter
+
+Multica's benchmark feature is adapter-driven. The default adapter, **ProgramBench**, implements the four interfaces below. To add a new task source (SWE-bench, an internal eval suite, …), implement the same interfaces and register your impl with the appropriate runtime.
+
+## The four interfaces
+
+All four live in `server/internal/service/benchmark/adapter/adapter.go`. Pick which ones to implement based on where they run:
+
+### `Catalog` — server-side
+
+Resolves an opaque `instance_id` into typed metadata. Called by the run dispatcher when a run starts.
+
+```go
+type Catalog interface {
+    Kind() string
+    Resolve(ctx context.Context, instanceID string) (Instance, error)
+    List(ctx context.Context, filter ListFilter) ([]Instance, error)
+}
+```
+
+### `IssueComposer` — server-side
+
+Builds the issue description that gets shown to the agent. Markdown, agent-facing.
+
+```go
+type IssueComposer interface {
+    Kind() string
+    Compose(ctx context.Context, in ComposeInput) (ComposeOutput, error)
+}
+```
+
+### `SubmissionParser` — server-side
+
+Validates whether an attachment on a benchmark issue counts as a real submission.
+
+```go
+type SubmissionParser interface {
+    Kind() string
+    Validate(ctx context.Context, att Attachment) error
+}
+```
+
+### `Evaluator` — evaluator-side
+
+Runs the actual eval inside the evaluator pod. Lives in the evaluator binary, not the server.
+
+```go
+type Evaluator interface {
+    Kind() string
+    Evaluate(ctx context.Context, in EvaluateInput) (EvaluateOutput, error)
+}
+```
+
+## Registration
+
+The server constructs a Registry and registers Catalog/Composer/Parser:
+
+```go
+// server/cmd/server/router.go
+benchmarkRegistry := adapter.NewRegistry()
+benchmarkRegistry.RegisterCatalog(adapter.NewProgramBenchCatalog())
+benchmarkRegistry.RegisterComposer(adapter.NewProgramBenchComposer())
+benchmarkRegistry.RegisterParser(adapter.NewProgramBenchParser())
+```
+
+The evaluator binary registers Evaluator:
+
+```go
+// server/cmd/evaluator/main.go
+registry := adapter.NewRegistry()
+registry.RegisterEvaluator(adapter.NewProgramBenchEvaluator())
+```
+
+`Kind()` is the lookup key. Make it match the value used in `benchmark_suite.adapter_kind`.
+
+## Reference: ProgramBench
+
+For a complete, working reference, see:
+
+- `server/internal/service/benchmark/adapter/programbench.go` — Catalog + Composer + Parser
+- `server/internal/service/benchmark/adapter/programbench_evaluator.go` — Evaluator
+
+The Catalog shells out to `uvx programbench` for task metadata. The Composer renders a Markdown template into the issue description. The Parser checks the attachment is exactly `submission.tar.gz` under 1 GiB. The Evaluator runs `uvx programbench eval` against the cleanroom image and parses the resulting JSON.
+
+## Testing strategy
+
+- **Catalog**: inject a fake `runArgs` shell so tests don't need `uvx`.
+- **Composer**: assert the rendered Markdown contains the expected sections (instance id, ban list, submission contract).
+- **Parser**: cover happy-path + each rejection (wrong filename, oversized, wrong MIME).
+- **Evaluator**: write a parser unit test that takes a stubbed eval JSON and produces the expected `EvaluateOutput`. Skip end-to-end Docker tests in unit suites; rely on operator-side smoke tests.
+
+## Wire format gotchas
+
+- `Instance.Meta` is opaque `json.RawMessage`. The server round-trips it without parsing. Adapters can encode whatever they need.
+- `EvaluateOutput.RawEvalJSON` is persisted verbatim into `benchmark_eval_result.raw_eval_json`. Keep it the upstream tool's native shape so it can be replayed later.
+- `EvaluateOutput.FailedCategories` should be **deduplicated** strings. The server aggregates by count across tasks for the run summary.

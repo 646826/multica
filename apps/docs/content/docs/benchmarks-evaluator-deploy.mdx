@@ -1,0 +1,80 @@
+---
+title: Benchmarks — Evaluator deploy
+description: Deploy the optional evaluator pod for managed-mode benchmark runs.
+---
+
+# Evaluator deploy guide
+
+The evaluator pod claims pending eval jobs from the Multica server, runs the adapter-specific evaluation inside Docker, and posts results back. It's optional — without it, runs operate in **imported** mode where you upload eval results yourself.
+
+## When to deploy
+
+Deploy the evaluator when you want benchmark runs to finalize automatically without manual eval uploads. The tradeoff is one more pod with Docker access in your cluster.
+
+## Prerequisites
+
+- Multica self-host running, version with benchmark feature.
+- A Kubernetes cluster (or Docker Compose host) where you can run a `linux/amd64` pod with Docker-in-Docker, OR a host that exposes its docker socket to the pod.
+- Network reachability from the evaluator pod to the Multica server's `/api/internal/eval-jobs/*` endpoints.
+
+## 1. Mint a workspace evaluator-pool token
+
+In the Multica UI, navigate to **Benchmarks → (workspace)** and create an evaluator token. Copy the plain-text token (shown only once, prefixed `evp_`).
+
+## 2. Configure the evaluator binary
+
+The evaluator binary `multica-evaluator` reads its config from environment variables:
+
+| Env | Required | Default | Purpose |
+|---|---|---|---|
+| `MULTICA_SERVER_URL` | yes | — | https URL of your Multica server |
+| `MULTICA_EVALUATOR_TOKEN` | yes | — | the `evp_…` token from step 1 |
+| `MULTICA_EVALUATOR_ID` | yes | — | a unique id for this evaluator instance (e.g. pod name) |
+| `MULTICA_MAX_CONCURRENT` | no | `2` | max in-flight eval jobs per evaluator |
+| `MULTICA_ADAPTER_KINDS` | no | `programbench` | comma-separated adapter kinds this evaluator runs |
+| `MULTICA_WORK_DIR` | no | `/tmp/multica-evaluator` | per-job work dir root |
+
+## 3. Deploy
+
+For Kubernetes, use the `multica-helm-chart` repo's evaluator subchart (see that repo's README for values). Minimal example:
+
+```yaml
+evaluator:
+  enabled: true
+  replicaCount: 1
+  serverUrl: https://multica.your-domain.com
+  evaluatorId: ${POD_NAME}
+  tokenSecretRef:
+    name: multica-evaluator-token
+    key: token
+  adapterKinds: [programbench]
+```
+
+For Docker Compose, run:
+
+```bash
+docker run -d \
+  -e MULTICA_SERVER_URL=https://multica.your-domain.com \
+  -e MULTICA_EVALUATOR_TOKEN=$(cat /etc/multica/evaluator-token) \
+  -e MULTICA_EVALUATOR_ID=local-1 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  --name multica-evaluator \
+  ghcr.io/multica-ai/multica-evaluator:latest
+```
+
+## 4. Verify
+
+After deploy, watch the evaluator's logs. Successful claims look like:
+
+```
+{"level":"info","msg":"evaluator: started","evaluator_id":"...","max_concurrent":2}
+{"level":"info","msg":"evaluator: claimed jobs","count":2}
+```
+
+You can also start a Managed-mode run from the UI and watch tasks transition through `submitted → evaluating → scored`.
+
+## Troubleshooting
+
+- **Pod can't claim jobs**: check the token isn't revoked; check `/api/internal/eval-jobs/claim` returns 200 for your bearer.
+- **Eval times out**: ProgramBench cleanroom images can be 100s of MB; increase `MULTICA_MAX_CONCURRENT` only after verifying memory/CPU headroom.
+- **Wrong arch**: ProgramBench images target `linux/amd64`. On macOS or arm64 hosts, run the evaluator on a Linux/amd64 node or use Docker Buildx with `--platform`.

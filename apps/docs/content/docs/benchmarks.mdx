@@ -1,0 +1,46 @@
+---
+title: Benchmarks
+description: Measure how your agent changes affect performance against a stable task set.
+---
+
+# Benchmarks
+
+Benchmarks let you stamp your agent's behavior against a stable task set, then run again after changes and see what improved or regressed. Useful for tuning prompts, evaluating new models, and validating skill updates without guesswork.
+
+## Concepts
+
+- **Suite** — a named, versioned list of benchmark tasks (e.g. ProgramBench cleanroom CLI tasks). Pick once, reuse across runs.
+- **Profile** — an immutable snapshot of an agent (its prompt, model, attached skills) at the moment you captured it. Identified by a content hash.
+- **Run** — one execution of (suite × profile). Each task in the suite becomes an issue assigned to your agent. The agent attaches a `submission.tar.gz`; the result is graded.
+- **Eval mode**:
+  - **Imported** — you upload graded results yourself (e.g. from a CI step that runs the upstream eval tooling). No extra Multica infra needed.
+  - **Managed** — Multica's evaluator pod claims submissions, runs the eval inside Docker, and posts results back. Requires the optional evaluator deployment (see [Deploy guide](./benchmarks-evaluator-deploy)).
+
+## Quickstart
+
+1. **Create a suite.** Sidebar → Benchmarks → Suites → Create suite. Paste one instance id per line.
+2. **Capture a profile.** Suites tab → Profiles → Capture profile. Pick the agent you'll benchmark. The capture stores the prompt + skills as a content-hashed snapshot.
+3. **Start a run.** Suites tab → Runs → Start run. Pick the suite and profile. Choose **Imported** mode for a first try.
+4. **Watch it work.** Multica creates one issue per task and assigns your agent. The agent solves each task in its sandbox and attaches `submission.tar.gz`.
+5. **Upload eval results.** Run the upstream eval against each submission and POST the resulting JSON to `/api/benchmarks/runs/<run-id>/eval-results/<instance-id>` per task. (Or deploy the evaluator and switch the run to Managed mode.)
+6. **Compare.** When you change the agent (new prompt, new skills, new model), capture a new profile and run the same suite. From the run detail, pick "Compare with…" to see what improved.
+
+## Reading the comparison
+
+The comparison view ranks instances into four buckets:
+
+- **Improved** — pass-rate went up by more than 0.1%.
+- **Regressed** — pass-rate went down by more than 0.1%.
+- **Newly resolved** — went from `<100%` to 100% pass-rate.
+- **Lost resolved** — went from 100% to `<100%`.
+
+It also shows aggregate deltas (resolved count, average pass-rate) and which failure categories appeared or cleared.
+
+## Leaderboard
+
+Per suite, the leaderboard ranks profiles by their best run, breaking ties by average pass-rate then completed-at (earlier wins). Useful for tracking which prompt/model combination is winning over time.
+
+## See also
+
+- [Evaluator deploy guide](./benchmarks-evaluator-deploy) — set up Managed mode.
+- [Adapter developer guide](./developers/benchmarks-adapter) — extend benchmarks to non-ProgramBench task sets.

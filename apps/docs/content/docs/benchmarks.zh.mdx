@@ -1,0 +1,46 @@
+---
+title: Benchmarks
+description: 用一套稳定的任务集衡量智能体改动带来的性能变化。
+---
+
+# Benchmarks
+
+Benchmarks 让你用一套稳定的任务集为智能体当前行为打一个"快照",改完之后再跑一次,看哪些进步、哪些回退。适合调 prompt、评估新模型、验证 skill 改动,而不靠拍脑袋。
+
+## 概念
+
+- **Suite(套件)** — 命名、版本化的 benchmark 任务列表(如 ProgramBench cleanroom CLI 任务)。建一次,反复用。
+- **Profile(画像)** — 智能体在某一刻的不可变快照(prompt、模型、附加 skill)。用内容哈希标识。
+- **Run(运行)** — 一次 (suite × profile) 的执行。Suite 中每个任务变成一个 issue 派给智能体。智能体附上 `submission.tar.gz`,随后被打分。
+- **评估模式**:
+  - **Imported(导入)** — 你自己上传打分结果(例如 CI 步骤里跑上游 eval 工具)。不需要额外 Multica 基础设施。
+  - **Managed(托管)** — Multica 评估器 pod 拉取 submission,在 Docker 里跑 eval,再把结果回传。需要部署可选的评估器(见 [部署指南](./benchmarks-evaluator-deploy))。
+
+## 快速上手
+
+1. **创建 suite。** 侧边栏 → Benchmarks → Suites → Create suite。每行一个 instance id。
+2. **捕获 profile。** Suites 标签 → Profiles → Capture profile。选要 benchmark 的智能体。捕获把 prompt + skills 存为内容哈希快照。
+3. **启动 run。** Suites 标签 → Runs → Start run。选 suite 和 profile。第一次先选 **Imported** 模式。
+4. **看它干活。** Multica 给每个任务建一个 issue 派给你的智能体。智能体在沙箱里解题,附上 `submission.tar.gz`。
+5. **上传 eval 结果。** 对每份 submission 跑上游 eval,把 JSON POST 到 `/api/benchmarks/runs/<run-id>/eval-results/<instance-id>`。(或者部署评估器,把 run 切成 Managed 模式。)
+6. **对比。** 改完智能体(新 prompt、新 skill、新模型),再 capture 一个 profile,跑同一个 suite。在 run 详情里点 "Compare with…",看哪些有进步。
+
+## 看懂对比
+
+对比视图把任务分成四档:
+
+- **Improved** — pass-rate 涨了超过 0.1%。
+- **Regressed** — pass-rate 跌了超过 0.1%。
+- **Newly resolved** — 从 `<100%` 升到 100%。
+- **Lost resolved** — 从 100% 降到 `<100%`。
+
+也会展示聚合 delta(resolved 数量、平均 pass-rate)以及哪些失败类别新出现或消失。
+
+## 排行榜
+
+每个 suite 都有 leaderboard,按 profile 的最佳 run 排序,平局按平均 pass-rate、再按 completed-at(更早胜出)。用来追踪哪个 prompt / 模型组合在持续领先。
+
+## 另见
+
+- [评估器部署指南](./benchmarks-evaluator-deploy) — 启用 Managed 模式。
+- [Adapter 开发指南](./developers/benchmarks-adapter) — 把 benchmarks 扩展到 ProgramBench 之外的任务源。

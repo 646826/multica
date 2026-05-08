@@ -1,0 +1,80 @@
+---
+title: Benchmarks — 评估器部署
+description: 部署可选的评估器 pod,启用 managed 模式 benchmark run。
+---
+
+# 评估器部署指南
+
+评估器 pod 从 Multica server 拉取待处理的 eval 任务,在 Docker 里跑 adapter 对应的评估,再把结果回传。它是可选的——不部署的话,run 就跑在 **imported** 模式,你自己上传 eval 结果。
+
+## 什么时候部署
+
+需要 benchmark run 自动 finalize、不用手动上传 eval 结果时,部署评估器。代价是集群里多一个有 Docker 权限的 pod。
+
+## 前置条件
+
+- Multica 自部署已运行,版本带 benchmark 功能。
+- 一个 Kubernetes 集群(或 Docker Compose 主机),能跑 `linux/amd64` 的 pod 并具备 Docker-in-Docker 能力,或者把宿主 docker socket 挂给 pod。
+- 评估器 pod 能访问 Multica server 的 `/api/internal/eval-jobs/*` 端点。
+
+## 1. 生成工作区评估器池 token
+
+在 Multica UI 进入 **Benchmarks → (workspace)**,创建一个评估器 token。把明文 token 拷出来(只显示一次,前缀是 `evp_`)。
+
+## 2. 配置评估器二进制
+
+`multica-evaluator` 二进制从环境变量读配置:
+
+| 环境变量 | 必填 | 默认 | 用途 |
+|---|---|---|---|
+| `MULTICA_SERVER_URL` | 是 | — | Multica server 的 https URL |
+| `MULTICA_EVALUATOR_TOKEN` | 是 | — | 第 1 步的 `evp_…` token |
+| `MULTICA_EVALUATOR_ID` | 是 | — | 这个评估器实例的唯一 id(例如 pod name) |
+| `MULTICA_MAX_CONCURRENT` | 否 | `2` | 单个评估器同时跑多少 eval 任务 |
+| `MULTICA_ADAPTER_KINDS` | 否 | `programbench` | 这个评估器跑哪些 adapter,逗号分隔 |
+| `MULTICA_WORK_DIR` | 否 | `/tmp/multica-evaluator` | 每个 job 的工作目录根 |
+
+## 3. 部署
+
+Kubernetes 用 `multica-helm-chart` 仓库的评估器子 chart(具体 values 见该仓库 README)。最小例子:
+
+```yaml
+evaluator:
+  enabled: true
+  replicaCount: 1
+  serverUrl: https://multica.your-domain.com
+  evaluatorId: ${POD_NAME}
+  tokenSecretRef:
+    name: multica-evaluator-token
+    key: token
+  adapterKinds: [programbench]
+```
+
+Docker Compose:
+
+```bash
+docker run -d \
+  -e MULTICA_SERVER_URL=https://multica.your-domain.com \
+  -e MULTICA_EVALUATOR_TOKEN=$(cat /etc/multica/evaluator-token) \
+  -e MULTICA_EVALUATOR_ID=local-1 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  --name multica-evaluator \
+  ghcr.io/multica-ai/multica-evaluator:latest
+```
+
+## 4. 验证
+
+部署后看评估器日志。成功 claim 形如:
+
+```
+{"level":"info","msg":"evaluator: started","evaluator_id":"...","max_concurrent":2}
+{"level":"info","msg":"evaluator: claimed jobs","count":2}
+```
+
+也可以从 UI 启动一个 Managed 模式 run,观察任务沿 `submitted → evaluating → scored` 流转。
+
+## 故障排查
+
+- **Pod 拿不到 job**:检查 token 没被吊销;检查 `/api/internal/eval-jobs/claim` 用你的 bearer 返回 200。
+- **Eval 超时**:ProgramBench cleanroom 镜像可能上百 MB;只在确认 memory / CPU 余量充足后再调大 `MULTICA_MAX_CONCURRENT`。
+- **架构不对**:ProgramBench 镜像目标是 `linux/amd64`。在 macOS / arm64 主机上,把评估器跑到 Linux/amd64 节点,或者用 Docker Buildx 加 `--platform`。
