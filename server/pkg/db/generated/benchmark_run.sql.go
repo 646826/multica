@@ -11,6 +11,38 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countActiveTasksForRun = `-- name: CountActiveTasksForRun :one
+SELECT
+    COUNT(*) FILTER (WHERE status IN ('queued', 'issued', 'submitted', 'evaluating')) AS active,
+    COUNT(*) FILTER (WHERE status = 'scored') AS scored,
+    COUNT(*) FILTER (WHERE status = 'errored') AS errored,
+    COUNT(*) FILTER (WHERE status = 'skipped') AS skipped,
+    COUNT(*) AS total
+FROM benchmark_task
+WHERE run_id = $1
+`
+
+type CountActiveTasksForRunRow struct {
+	Active  int64 `json:"active"`
+	Scored  int64 `json:"scored"`
+	Errored int64 `json:"errored"`
+	Skipped int64 `json:"skipped"`
+	Total   int64 `json:"total"`
+}
+
+func (q *Queries) CountActiveTasksForRun(ctx context.Context, runID pgtype.UUID) (CountActiveTasksForRunRow, error) {
+	row := q.db.QueryRow(ctx, countActiveTasksForRun, runID)
+	var i CountActiveTasksForRunRow
+	err := row.Scan(
+		&i.Active,
+		&i.Scored,
+		&i.Errored,
+		&i.Skipped,
+		&i.Total,
+	)
+	return i, err
+}
+
 const createBenchmarkRun = `-- name: CreateBenchmarkRun :one
 INSERT INTO benchmark_run (
     workspace_id, suite_id, suite_instance_ids, profile_id, base_run_id,
@@ -104,6 +136,50 @@ func (q *Queries) GetBenchmarkRun(ctx context.Context, arg GetBenchmarkRunParams
 	return i, err
 }
 
+const listActiveBenchmarkRuns = `-- name: ListActiveBenchmarkRuns :many
+SELECT id, workspace_id, suite_id, suite_instance_ids, profile_id, base_run_id, display_name, status, status_reason, notes, evaluator_mode, adapter_version, submission_timeout_seconds, created_at, created_by, started_at, completed_at FROM benchmark_run
+WHERE status IN ('queued', 'submitting', 'evaluating')
+ORDER BY created_at ASC
+`
+
+func (q *Queries) ListActiveBenchmarkRuns(ctx context.Context) ([]BenchmarkRun, error) {
+	rows, err := q.db.Query(ctx, listActiveBenchmarkRuns)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BenchmarkRun{}
+	for rows.Next() {
+		var i BenchmarkRun
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.SuiteID,
+			&i.SuiteInstanceIds,
+			&i.ProfileID,
+			&i.BaseRunID,
+			&i.DisplayName,
+			&i.Status,
+			&i.StatusReason,
+			&i.Notes,
+			&i.EvaluatorMode,
+			&i.AdapterVersion,
+			&i.SubmissionTimeoutSeconds,
+			&i.CreatedAt,
+			&i.CreatedBy,
+			&i.StartedAt,
+			&i.CompletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listBenchmarkRuns = `-- name: ListBenchmarkRuns :many
 SELECT id, workspace_id, suite_id, suite_instance_ids, profile_id, base_run_id, display_name, status, status_reason, notes, evaluator_mode, adapter_version, submission_timeout_seconds, created_at, created_by, started_at, completed_at FROM benchmark_run WHERE workspace_id = $1
 ORDER BY created_at DESC LIMIT $2
@@ -150,4 +226,100 @@ func (q *Queries) ListBenchmarkRuns(ctx context.Context, arg ListBenchmarkRunsPa
 		return nil, err
 	}
 	return items, nil
+}
+
+const listBenchmarkRunsBySuite = `-- name: ListBenchmarkRunsBySuite :many
+SELECT id, workspace_id, suite_id, suite_instance_ids, profile_id, base_run_id, display_name, status, status_reason, notes, evaluator_mode, adapter_version, submission_timeout_seconds, created_at, created_by, started_at, completed_at FROM benchmark_run
+WHERE workspace_id = $1 AND suite_id = $2 AND status = 'complete'
+ORDER BY completed_at DESC LIMIT $3
+`
+
+type ListBenchmarkRunsBySuiteParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	SuiteID     pgtype.UUID `json:"suite_id"`
+	Limit       int32       `json:"limit"`
+}
+
+func (q *Queries) ListBenchmarkRunsBySuite(ctx context.Context, arg ListBenchmarkRunsBySuiteParams) ([]BenchmarkRun, error) {
+	rows, err := q.db.Query(ctx, listBenchmarkRunsBySuite, arg.WorkspaceID, arg.SuiteID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BenchmarkRun{}
+	for rows.Next() {
+		var i BenchmarkRun
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.SuiteID,
+			&i.SuiteInstanceIds,
+			&i.ProfileID,
+			&i.BaseRunID,
+			&i.DisplayName,
+			&i.Status,
+			&i.StatusReason,
+			&i.Notes,
+			&i.EvaluatorMode,
+			&i.AdapterVersion,
+			&i.SubmissionTimeoutSeconds,
+			&i.CreatedAt,
+			&i.CreatedBy,
+			&i.StartedAt,
+			&i.CompletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const updateBenchmarkRunStatus = `-- name: UpdateBenchmarkRunStatus :one
+UPDATE benchmark_run
+SET status = $3, status_reason = $4,
+    started_at = COALESCE(started_at, CASE WHEN $3 = 'submitting' THEN now() ELSE started_at END),
+    completed_at = COALESCE(completed_at, CASE WHEN $3 IN ('complete', 'failed', 'canceled') THEN now() ELSE completed_at END)
+WHERE id = $1 AND workspace_id = $2
+RETURNING id, workspace_id, suite_id, suite_instance_ids, profile_id, base_run_id, display_name, status, status_reason, notes, evaluator_mode, adapter_version, submission_timeout_seconds, created_at, created_by, started_at, completed_at
+`
+
+type UpdateBenchmarkRunStatusParams struct {
+	ID           pgtype.UUID `json:"id"`
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	Status       string      `json:"status"`
+	StatusReason string      `json:"status_reason"`
+}
+
+func (q *Queries) UpdateBenchmarkRunStatus(ctx context.Context, arg UpdateBenchmarkRunStatusParams) (BenchmarkRun, error) {
+	row := q.db.QueryRow(ctx, updateBenchmarkRunStatus,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.Status,
+		arg.StatusReason,
+	)
+	var i BenchmarkRun
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.SuiteID,
+		&i.SuiteInstanceIds,
+		&i.ProfileID,
+		&i.BaseRunID,
+		&i.DisplayName,
+		&i.Status,
+		&i.StatusReason,
+		&i.Notes,
+		&i.EvaluatorMode,
+		&i.AdapterVersion,
+		&i.SubmissionTimeoutSeconds,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.StartedAt,
+		&i.CompletedAt,
+	)
+	return i, err
 }
