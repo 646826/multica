@@ -5,6 +5,8 @@ import { useQuery } from "@tanstack/react-query";
 import {
   benchmarkRunDetailOptions,
   benchmarkRunListOptions,
+  benchmarkRunSummaryOptions,
+  benchmarkRunTasksOptions,
   extractBenchmarkErrorCode,
   useCancelBenchmarkRun,
 } from "@multica/core/benchmarks";
@@ -298,6 +300,11 @@ export default function RunDetail({ runId }: { runId: string }) {
 
   const cancelMut = useCancelBenchmarkRun();
 
+  const { data: tasks = [], isLoading: tasksLoading } = useQuery(
+    benchmarkRunTasksOptions(wsId, runId),
+  );
+  const { data: summary } = useQuery(benchmarkRunSummaryOptions(wsId, runId));
+
   if (isLoading) {
     return <LoadingState onBack={goBack} />;
   }
@@ -393,13 +400,135 @@ export default function RunDetail({ runId }: { runId: string }) {
           </section>
         )}
 
-        <section className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
-          {t(($) => $.run_detail.tasks_placeholder)}
+        <section>
+          <h2 className="mb-2 text-sm font-medium">
+            {t(($) => $.run_detail.tasks_title, { count: tasks.length })}
+          </h2>
+          {tasksLoading ? (
+            <Skeleton className="h-32 w-full" />
+          ) : tasks.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              {t(($) => $.run_detail.tasks_empty)}
+            </p>
+          ) : (
+            <div className="overflow-x-auto rounded-md border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">
+                      {t(($) => $.run_detail.tasks_col_instance)}
+                    </th>
+                    <th className="px-3 py-2 font-medium">
+                      {t(($) => $.run_detail.tasks_col_status)}
+                    </th>
+                    <th className="px-3 py-2 font-medium">
+                      {t(($) => $.run_detail.tasks_col_pass_rate)}
+                    </th>
+                    <th className="px-3 py-2 font-medium">
+                      {t(($) => $.run_detail.tasks_col_actions)}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tasks.map((task) => (
+                    <tr key={task.id} className="border-t">
+                      <td className="px-3 py-2">
+                        <code className="font-mono text-xs">
+                          {task.instance_id}
+                        </code>
+                      </td>
+                      <td className="px-3 py-2">
+                        <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium">
+                          {task.status}
+                        </span>
+                        {task.status_reason && (
+                          <span className="ml-1 text-xs text-muted-foreground">
+                            {task.status_reason}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 tabular-nums">
+                        {task.total_tests > 0
+                          ? `${task.passed_tests}/${task.total_tests} (${(task.pass_rate * 100).toFixed(1)}%)`
+                          : "—"}
+                      </td>
+                      <td className="px-3 py-2">
+                        {task.issue_id && (
+                          <AppLink
+                            href={paths.issueDetail(task.issue_id)}
+                            className="text-primary underline-offset-2 hover:underline"
+                          >
+                            {t(($) => $.run_detail.tasks_open_issue)}
+                          </AppLink>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </section>
 
-        {run.status === "complete" && (
-          <section className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
-            {t(($) => $.run_detail.summary_placeholder)}
+        {run.status === "complete" && summary && (
+          <section className="rounded-md border bg-background p-4">
+            <h2 className="text-sm font-medium">
+              {t(($) => $.run_detail.summary_title)}
+            </h2>
+            <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div>
+                <dt className="text-xs text-muted-foreground">
+                  {t(($) => $.run_detail.summary_resolved)}
+                </dt>
+                <dd className="text-2xl font-semibold tabular-nums">
+                  {summary.resolved_count}/{summary.total_count}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">
+                  {t(($) => $.run_detail.summary_avg_pr)}
+                </dt>
+                <dd className="text-2xl font-semibold tabular-nums">
+                  {(summary.average_pass_rate * 100).toFixed(1)}%
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">
+                  {t(($) => $.run_detail.summary_agg_pr)}
+                </dt>
+                <dd className="text-2xl font-semibold tabular-nums">
+                  {(summary.aggregate_pass_rate * 100).toFixed(1)}%
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">
+                  {t(($) => $.run_detail.summary_errored)}
+                </dt>
+                <dd className="text-2xl font-semibold tabular-nums">
+                  {summary.errored_count}
+                </dd>
+              </div>
+            </dl>
+            {summary.failure_categories.length > 0 && (
+              <div className="mt-4">
+                <h3 className="text-sm font-medium">
+                  {t(($) => $.run_detail.summary_top_failures)}
+                </h3>
+                <ul className="mt-1 text-sm">
+                  {summary.failure_categories.map((cat) => (
+                    <li
+                      key={cat.name}
+                      className="flex justify-between border-t py-1 first:border-t-0"
+                    >
+                      <code className="font-mono text-xs">{cat.name}</code>
+                      <span className="tabular-nums text-muted-foreground">
+                        {cat.count}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </section>
         )}
       </div>
