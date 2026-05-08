@@ -38,7 +38,8 @@
     "display_name_required": "Display name is required.",
     "evaluator_id_required": "Evaluator id is required.",
     "adapter_kinds_required": "At least one adapter kind is required.",
-    "eval_job_not_found": "Eval job not found."
+    "eval_job_not_found": "Eval job not found.",
+    "adapter_unknown": "This suite's adapter is no longer registered on the server."
   },
   "status": {
     "queued": "Queued",
@@ -203,7 +204,13 @@
     "error_title": "Couldn't load suite",
     "created_prefix": "Created {{when}}",
     "instances_heading": "Instances",
-    "immutable_note": "Suites become immutable once a run uses them. Edit freely until then."
+    "immutable_note": "Suites become immutable once a run uses them. Edit freely until then.",
+    "sync_button": "Sync from catalog",
+    "sync_button_pending": "Syncing…",
+    "sync_result_aria": "Sync result",
+    "sync_result_resolved": "Resolved: {{count}}",
+    "sync_result_unresolved": "Unresolved: {{count}}",
+    "sync_error_title": "Sync failed"
   },
   "profiles_list": {
     "page_title": "Profiles",

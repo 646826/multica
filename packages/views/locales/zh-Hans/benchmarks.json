@@ -38,7 +38,8 @@
     "display_name_required": "显示名称为必填。",
     "evaluator_id_required": "评估器 id 为必填。",
     "adapter_kinds_required": "至少需要一种适配器类型。",
-    "eval_job_not_found": "未找到评估任务。"
+    "eval_job_not_found": "未找到评估任务。",
+    "adapter_unknown": "此套件的适配器已不在服务器注册。"
   },
   "status": {
     "queued": "排队中",
@@ -203,7 +204,13 @@
     "error_title": "加载套件失败",
     "created_prefix": "创建于 {{when}}",
     "instances_heading": "实例",
-    "immutable_note": "一旦有 run 使用过套件，它就变为不可变。在那之前可以自由编辑。"
+    "immutable_note": "一旦有 run 使用过套件，它就变为不可变。在那之前可以自由编辑。",
+    "sync_button": "从 catalog 同步",
+    "sync_button_pending": "同步中…",
+    "sync_result_aria": "同步结果",
+    "sync_result_resolved": "已解析：{{count}}",
+    "sync_result_unresolved": "未解析：{{count}}",
+    "sync_error_title": "同步失败"
   },
   "profiles_list": {
     "page_title": "档案",

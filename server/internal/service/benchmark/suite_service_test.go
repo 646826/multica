@@ -4,9 +4,11 @@ import (
 	"context"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/require"
 
 	"github.com/multica-ai/multica/server/internal/service/benchmark"
+	"github.com/multica-ai/multica/server/internal/service/benchmark/adapter"
 )
 
 func TestSuiteService_Create_StoresAndReturns(t *testing.T) {
@@ -92,6 +94,62 @@ func TestSuiteService_Delete_RemovesAndIsIdempotent(t *testing.T) {
 
 	require.NoError(t, s.Delete(ctx, created.ID, tx.WorkspaceID))
 	require.ErrorIs(t, s.Delete(ctx, created.ID, tx.WorkspaceID), benchmark.ErrSuiteNotFound)
+}
+
+func TestSuiteService_SyncFromCatalog_BucketsResolvedAndUnresolved(t *testing.T) {
+	ctx := context.Background()
+	tx := newFixtureWorkspace(t)
+	s := benchmark.NewSuiteService(tx.Queries)
+
+	created, err := s.Create(ctx, benchmark.CreateSuiteInput{
+		WorkspaceID: tx.WorkspaceID, Slug: "sync-ok", DisplayName: "Sync OK",
+		AdapterKind: "programbench",
+		InstanceIDs: []string{"good__id.cafe", "bad__id.beef"},
+		CreatedBy:   tx.UserID,
+	})
+	require.NoError(t, err)
+
+	reg := adapter.NewRegistry()
+	reg.RegisterCatalog(&fakeCatalog{
+		kind: "programbench",
+		responses: map[string]adapter.Instance{
+			"good__id.cafe": {ID: "good__id.cafe"},
+		},
+	})
+
+	got, err := s.SyncFromCatalog(ctx, created.ID, tx.WorkspaceID, reg)
+	require.NoError(t, err)
+	require.Equal(t, "programbench", got.AdapterKind)
+	require.Equal(t, []string{"good__id.cafe"}, got.Resolved)
+	require.Equal(t, []string{"bad__id.beef"}, got.Unresolved)
+}
+
+func TestSuiteService_SyncFromCatalog_NotFound(t *testing.T) {
+	ctx := context.Background()
+	tx := newFixtureWorkspace(t)
+	s := benchmark.NewSuiteService(tx.Queries)
+	reg := adapter.NewRegistry()
+
+	_, err := s.SyncFromCatalog(ctx, pgtype.UUID{}, tx.WorkspaceID, reg)
+	require.ErrorIs(t, err, benchmark.ErrSuiteNotFound)
+}
+
+func TestSuiteService_SyncFromCatalog_UnknownAdapter(t *testing.T) {
+	ctx := context.Background()
+	tx := newFixtureWorkspace(t)
+	s := benchmark.NewSuiteService(tx.Queries)
+
+	created, err := s.Create(ctx, benchmark.CreateSuiteInput{
+		WorkspaceID: tx.WorkspaceID, Slug: "sync-unknown", DisplayName: "Sync Unknown",
+		AdapterKind: "programbench",
+		InstanceIDs: []string{"x"},
+		CreatedBy:   tx.UserID,
+	})
+	require.NoError(t, err)
+
+	reg := adapter.NewRegistry() // empty — no catalogs registered
+	_, err = s.SyncFromCatalog(ctx, created.ID, tx.WorkspaceID, reg)
+	require.ErrorIs(t, err, benchmark.ErrSuiteAdapterUnknown)
 }
 
 func TestSuiteService_Delete_RejectsCrossWorkspace(t *testing.T) {

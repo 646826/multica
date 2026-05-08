@@ -139,10 +139,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	benchmarkEvalJobs := benchmarkservice.NewEvalJobService(queries, pool, bus)
 
 	benchmarkHandler := handler.NewBenchmarkHandler(handler.BenchmarkDeps{
-		Suites:        benchmarkSuites,
-		Profiles:      benchmarkProfiles,
-		Runs:          benchmarkRuns,
-		EvaluatorPool: benchmarkEvaluatorPool,
+		Suites:          benchmarkSuites,
+		Profiles:        benchmarkProfiles,
+		Runs:            benchmarkRuns,
+		EvaluatorPool:   benchmarkEvaluatorPool,
+		AdapterRegistry: benchmarkRegistry,
 	})
 	evalJobsHandler := handler.NewEvalJobsHandler(benchmarkEvalJobs)
 
@@ -493,6 +494,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Route("/{id}", func(r chi.Router) {
 						r.Get("/", benchmarkHandler.GetSuite)
 						r.Delete("/", benchmarkHandler.DeleteSuite)
+						r.Post("/sync", benchmarkHandler.SyncSuite)
 					})
 				})
 				r.Route("/profiles", func(r chi.Router) {

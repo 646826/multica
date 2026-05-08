@@ -3,12 +3,14 @@ package benchmark
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/service/benchmark/adapter"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -18,6 +20,7 @@ var (
 	ErrSuiteInstanceListEmpty = errors.New("benchmark: suite instance list cannot be empty")
 	ErrSuiteSlugTaken         = errors.New("benchmark: suite slug already used in workspace")
 	ErrSuiteNotFound          = errors.New("benchmark: suite not found")
+	ErrSuiteAdapterUnknown    = errors.New("benchmark: suite adapter not registered")
 )
 
 // Suite is the service-layer representation of benchmark_suite. It mirrors
@@ -129,6 +132,60 @@ func (s *SuiteService) Delete(ctx context.Context, id, workspaceID pgtype.UUID) 
 		return ErrSuiteNotFound
 	}
 	return nil
+}
+
+// SuiteSyncResult is the outcome of SuiteService.SyncFromCatalog. v1 is
+// informational only — it does not mutate the suite. Callers can compare the
+// resolved/unresolved buckets against the live suite to decide whether the
+// instance set has drifted.
+type SuiteSyncResult struct {
+	SuiteID     pgtype.UUID
+	AdapterKind string
+	Resolved    []string
+	Unresolved  []string
+}
+
+// SyncFromCatalog re-resolves a suite's instance_ids against the registered
+// Catalog for its adapter_kind. It does not mutate the suite — every id is
+// either appended to Resolved (Catalog.Resolve returned no error) or to
+// Unresolved (Resolve returned any error). Returns ErrSuiteNotFound when no
+// row matches (id, workspaceID), and ErrSuiteAdapterUnknown when the suite
+// references an adapter the registry does not know about.
+func (s *SuiteService) SyncFromCatalog(
+	ctx context.Context,
+	id, workspaceID pgtype.UUID,
+	registry *adapter.Registry,
+) (SuiteSyncResult, error) {
+	row, err := s.q.GetBenchmarkSuite(ctx, db.GetBenchmarkSuiteParams{
+		ID:          id,
+		WorkspaceID: workspaceID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SuiteSyncResult{}, ErrSuiteNotFound
+	}
+	if err != nil {
+		return SuiteSyncResult{}, err
+	}
+
+	cat, ok := registry.Catalog(row.AdapterKind)
+	if !ok {
+		return SuiteSyncResult{}, fmt.Errorf("%w: %s", ErrSuiteAdapterUnknown, row.AdapterKind)
+	}
+
+	out := SuiteSyncResult{
+		SuiteID:     row.ID,
+		AdapterKind: row.AdapterKind,
+		Resolved:    []string{},
+		Unresolved:  []string{},
+	}
+	for _, instanceID := range row.InstanceIds {
+		if _, err := cat.Resolve(ctx, instanceID); err != nil {
+			out.Unresolved = append(out.Unresolved, instanceID)
+		} else {
+			out.Resolved = append(out.Resolved, instanceID)
+		}
+	}
+	return out, nil
 }
 
 func rowToSuite(r db.BenchmarkSuite) Suite {

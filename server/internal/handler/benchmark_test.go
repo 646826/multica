@@ -14,6 +14,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/service/benchmark"
+	benchmarkadapter "github.com/multica-ai/multica/server/internal/service/benchmark/adapter"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -26,11 +27,14 @@ func newBenchmarkHandler(t *testing.T) *BenchmarkHandler {
 	if testHandler == nil {
 		t.Skip("testHandler not initialized (DATABASE_URL unreachable)")
 	}
+	registry := benchmarkadapter.NewRegistry()
+	registry.RegisterCatalog(benchmarkadapter.NewProgramBenchCatalog())
 	return NewBenchmarkHandler(BenchmarkDeps{
-		Suites:        benchmark.NewSuiteService(testHandler.Queries),
-		Profiles:      benchmark.NewProfileService(testHandler.Queries),
-		Runs:          benchmark.NewRunService(testHandler.Queries, testPool, events.New()),
-		EvaluatorPool: benchmark.NewEvaluatorPoolService(testHandler.Queries),
+		Suites:          benchmark.NewSuiteService(testHandler.Queries),
+		Profiles:        benchmark.NewProfileService(testHandler.Queries),
+		Runs:            benchmark.NewRunService(testHandler.Queries, testPool, events.New()),
+		EvaluatorPool:   benchmark.NewEvaluatorPoolService(testHandler.Queries),
+		AdapterRegistry: registry,
 	})
 }
 

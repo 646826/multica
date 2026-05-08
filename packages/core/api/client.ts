@@ -95,6 +95,7 @@ import type {
   ListLeaderboardResponse,
   ListBenchmarkRunTasksResponse,
   BenchmarkRunSummary,
+  SuiteSyncResult,
 } from "../types";
 import type { OnboardingCompletionPath } from "../onboarding/types";
 import { type Logger, noopLogger } from "../logger";
@@ -1307,6 +1308,16 @@ export class ApiClient {
 
   async deleteBenchmarkSuite(id: string): Promise<void> {
     await this.fetch(`/api/benchmarks/suites/${id}`, { method: "DELETE" });
+  }
+
+  // Re-resolves the suite's instance_ids against the registered Catalog for
+  // its adapter_kind. v1 informational — does not mutate the suite. The
+  // server may return 400 `adapter_unknown` if the suite was created with an
+  // adapter the server no longer registers.
+  async syncBenchmarkSuite(id: string): Promise<SuiteSyncResult> {
+    return this.fetch<SuiteSyncResult>(`/api/benchmarks/suites/${id}/sync`, {
+      method: "POST",
+    });
   }
 
   async listBenchmarkProfiles(): Promise<ListBenchmarkProfilesResponse> {

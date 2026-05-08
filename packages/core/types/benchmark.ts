@@ -71,6 +71,19 @@ export interface CaptureProfileRequest {
   display_name: string;
 }
 
+/**
+ * Result of `POST /api/benchmarks/suites/:id/sync`. v1 is informational —
+ * the suite is not mutated; the response splits the suite's `instance_ids`
+ * into the ones the registered Catalog could resolve vs. the ones it could
+ * not. Empty `unresolved` means the suite is in sync with its source.
+ */
+export interface SuiteSyncResult {
+  suite_id: string;
+  adapter_kind: string;
+  resolved: string[];
+  unresolved: string[];
+}
+
 /** Wrapper returned by list endpoints. */
 export interface ListBenchmarkSuitesResponse {
   items: BenchmarkSuite[];
@@ -277,4 +290,5 @@ export type BenchmarkErrorCode =
   | "display_name_required"
   | "evaluator_id_required"
   | "adapter_kinds_required"
-  | "eval_job_not_found";
+  | "eval_job_not_found"
+  | "adapter_unknown";

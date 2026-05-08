@@ -73,6 +73,8 @@ function messageForCode(t: Translator, code: BenchmarkErrorCode): string {
       return t(($) => $.errors.adapter_kinds_required);
     case "eval_job_not_found":
       return t(($) => $.errors.eval_job_not_found);
+    case "adapter_unknown":
+      return t(($) => $.errors.adapter_unknown);
   }
 }
 

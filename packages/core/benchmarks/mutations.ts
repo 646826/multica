@@ -33,6 +33,21 @@ export function useDeleteBenchmarkSuite() {
   });
 }
 
+// useSyncBenchmarkSuite re-resolves the suite's instance_ids against the
+// registered Catalog. v1 informational only — the suite is not mutated, so
+// no list cache needs invalidating; we only invalidate the per-detail key in
+// case the resolved/unresolved info gets surfaced there in a future revision.
+export function useSyncBenchmarkSuite() {
+  const wsId = useWorkspaceId();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.syncBenchmarkSuite(id),
+    onSuccess: (_, id) => {
+      void qc.invalidateQueries({ queryKey: benchmarkKeys.suite(wsId, id) });
+    },
+  });
+}
+
 export function useCaptureBenchmarkProfile() {
   const qc = useQueryClient();
   const wsId = useWorkspaceId();

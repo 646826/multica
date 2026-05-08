@@ -13,6 +13,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/service/benchmark"
+	"github.com/multica-ai/multica/server/internal/service/benchmark/adapter"
 	"github.com/multica-ai/multica/server/internal/util"
 )
 
@@ -20,10 +21,11 @@ import (
 // Profiles is included now (T10) so T11 can plug profile methods into the
 // same handler without changing the constructor signature.
 type BenchmarkDeps struct {
-	Suites        *benchmark.SuiteService
-	Profiles      *benchmark.ProfileService
-	Runs          *benchmark.RunService
-	EvaluatorPool *benchmark.EvaluatorPoolService
+	Suites          *benchmark.SuiteService
+	Profiles        *benchmark.ProfileService
+	Runs            *benchmark.RunService
+	EvaluatorPool   *benchmark.EvaluatorPoolService
+	AdapterRegistry *adapter.Registry
 }
 
 // BenchmarkHandler exposes /api/benchmarks/* routes. It is a sibling of
@@ -65,6 +67,7 @@ const (
 	errSuiteRequired           = "suite_required"
 	errRunNotComplete          = "run_not_complete"
 	errSummaryNotAvailable     = "summary_not_available"
+	errAdapterUnknown          = "adapter_unknown"
 )
 
 // SuiteResponse is the JSON shape for a benchmark_suite at the handler boundary.
@@ -309,6 +312,54 @@ func (h *BenchmarkHandler) DeleteSuite(w http.ResponseWriter, r *http.Request) {
 	slog.Info("benchmark.suite_deleted",
 		append(logger.RequestAttrs(r), "workspace_id", uuidToString(wsUUID), "suite_id", id)...)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// SyncSuite handles POST /api/benchmarks/suites/{id}/sync.
+//
+// Re-resolves every instance_id in the suite against the registered Catalog
+// for its adapter_kind. v1 is informational — the suite is not mutated; the
+// frontend renders the resolved/unresolved buckets so operators can see when
+// a suite has drifted from its source catalog. Unknown adapter_kind returns
+// 400 adapter_unknown (the suite was created against an adapter the server
+// no longer registers).
+func (h *BenchmarkHandler) SyncSuite(w http.ResponseWriter, r *http.Request) {
+	wsUUID, _, ok := resolveBenchmarkContext(w, r)
+	if !ok {
+		return
+	}
+	id := chi.URLParam(r, "id")
+	idUUID, ok := parseBenchmarkURLID(w, id)
+	if !ok {
+		return
+	}
+	result, err := h.deps.Suites.SyncFromCatalog(r.Context(), idUUID, wsUUID, h.deps.AdapterRegistry)
+	switch {
+	case errors.Is(err, benchmark.ErrSuiteNotFound):
+		writeError(w, http.StatusNotFound, errSuiteNotFound)
+		return
+	case errors.Is(err, benchmark.ErrSuiteAdapterUnknown):
+		writeError(w, http.StatusBadRequest, errAdapterUnknown)
+		return
+	case err != nil:
+		slog.Warn("benchmark.suite_sync_failed",
+			append(logger.RequestAttrs(r), "err", err, "workspace_id", uuidToString(wsUUID), "suite_id", id)...)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	slog.Info("benchmark.suite_synced",
+		append(logger.RequestAttrs(r),
+			"workspace_id", uuidToString(wsUUID),
+			"suite_id", uuidToString(result.SuiteID),
+			"adapter_kind", result.AdapterKind,
+			"resolved_count", len(result.Resolved),
+			"unresolved_count", len(result.Unresolved),
+		)...)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"suite_id":     uuidToString(result.SuiteID),
+		"adapter_kind": result.AdapterKind,
+		"resolved":     result.Resolved,
+		"unresolved":   result.Unresolved,
+	})
 }
 
 // CaptureProfile handles POST /api/benchmarks/profiles.

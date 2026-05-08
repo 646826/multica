@@ -1,14 +1,16 @@
 "use client";
 
-import { AlertCircle, ArrowLeft } from "lucide-react";
+import { AlertCircle, ArrowLeft, RefreshCw } from "lucide-react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   benchmarkSuiteDetailOptions,
   extractBenchmarkErrorCode,
+  useSyncBenchmarkSuite,
 } from "@multica/core/benchmarks";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
-import type { BenchmarkErrorCode } from "@multica/core/types";
+import type { BenchmarkErrorCode, SuiteSyncResult } from "@multica/core/types";
 import { timeAgo } from "@multica/core/utils";
 import {
   Alert,
@@ -68,6 +70,8 @@ function messageForCode(t: Translator, code: BenchmarkErrorCode): string {
       return t(($) => $.errors.adapter_kinds_required);
     case "eval_job_not_found":
       return t(($) => $.errors.eval_job_not_found);
+    case "adapter_unknown":
+      return t(($) => $.errors.adapter_unknown);
   }
 }
 
@@ -135,6 +139,25 @@ export default function SuiteDetail({ suiteId }: { suiteId: string }) {
     error,
   } = useQuery(benchmarkSuiteDetailOptions(wsId, suiteId));
 
+  // Sync-from-catalog state. Result and error are mirrored into local state
+  // so re-clicking the button reuses the rendered area without flashing
+  // empty between the new pending and the new result.
+  const sync = useSyncBenchmarkSuite();
+  const [syncResult, setSyncResult] = useState<SuiteSyncResult | null>(null);
+  const [syncError, setSyncError] = useState<unknown>(null);
+  const onSyncClick = () => {
+    setSyncError(null);
+    sync.mutate(suiteId, {
+      onSuccess: (data) => {
+        setSyncResult(data);
+      },
+      onError: (err) => {
+        setSyncResult(null);
+        setSyncError(err);
+      },
+    });
+  };
+
   if (isLoading) {
     return <LoadingState onBack={goBack} />;
   }
@@ -186,6 +209,20 @@ export default function SuiteDetail({ suiteId }: { suiteId: string }) {
                 when: timeAgo(suite.created_at),
               })}
             </span>
+            <div className="ml-auto flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onSyncClick}
+                disabled={sync.isPending}
+              >
+                <RefreshCw className="h-3 w-3" />
+                {sync.isPending
+                  ? t(($) => $.suite_detail.sync_button_pending)
+                  : t(($) => $.suite_detail.sync_button)}
+              </Button>
+            </div>
           </div>
           {description && (
             <p className="max-w-2xl text-sm text-muted-foreground">
@@ -193,6 +230,51 @@ export default function SuiteDetail({ suiteId }: { suiteId: string }) {
             </p>
           )}
         </div>
+
+        {syncError != null && (
+          <Alert variant="destructive">
+            <AlertCircle />
+            <AlertTitle>{t(($) => $.suite_detail.sync_error_title)}</AlertTitle>
+            <AlertDescription>{errorMessage(t, syncError)}</AlertDescription>
+          </Alert>
+        )}
+
+        {syncResult && (
+          <section
+            aria-label={t(($) => $.suite_detail.sync_result_aria)}
+            className="flex flex-col gap-2 rounded-lg border bg-background p-3"
+          >
+            <div className="flex flex-wrap items-baseline gap-3 text-xs">
+              <span className="font-medium">
+                {t(($) => $.suite_detail.sync_result_resolved, {
+                  count: syncResult.resolved.length,
+                })}
+              </span>
+              <span
+                className={
+                  syncResult.unresolved.length > 0
+                    ? "font-medium text-destructive"
+                    : "font-medium"
+                }
+              >
+                {t(($) => $.suite_detail.sync_result_unresolved, {
+                  count: syncResult.unresolved.length,
+                })}
+              </span>
+            </div>
+            {syncResult.unresolved.length > 0 && (
+              <ul className="flex flex-col gap-1">
+                {syncResult.unresolved.map((iid) => (
+                  <li key={iid}>
+                    <code className="font-mono text-xs text-destructive">
+                      {iid}
+                    </code>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
 
         <section className="flex flex-col gap-2">
           <div className="flex items-baseline gap-2">

@@ -66,6 +66,7 @@ export type {
   FailureCategory,
   BenchmarkRunSummary,
   ListBenchmarkRunTasksResponse,
+  SuiteSyncResult,
 } from "./benchmark";
 export type {
   TimelineEntry,
