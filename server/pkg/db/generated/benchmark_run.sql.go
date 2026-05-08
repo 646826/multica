@@ -137,7 +137,7 @@ func (q *Queries) GetBenchmarkRun(ctx context.Context, arg GetBenchmarkRunParams
 }
 
 const getBenchmarkSuiteByWorkspaceAndSlug = `-- name: GetBenchmarkSuiteByWorkspaceAndSlug :one
-SELECT id, workspace_id, slug, display_name, adapter_kind, instance_ids, description, created_at, created_by FROM benchmark_suite WHERE workspace_id = $1 AND slug = $2
+SELECT id, workspace_id, slug, display_name, adapter_kind, instance_ids, description, created_at, created_by, instance_meta_overrides FROM benchmark_suite WHERE workspace_id = $1 AND slug = $2
 `
 
 type GetBenchmarkSuiteByWorkspaceAndSlugParams struct {
@@ -158,6 +158,7 @@ func (q *Queries) GetBenchmarkSuiteByWorkspaceAndSlug(ctx context.Context, arg G
 		&i.Description,
 		&i.CreatedAt,
 		&i.CreatedBy,
+		&i.InstanceMetaOverrides,
 	)
 	return i, err
 }

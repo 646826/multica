@@ -686,6 +686,58 @@ func (q *Queries) ListOpenIssues(ctx context.Context, arg ListOpenIssuesParams) 
 	return items, nil
 }
 
+const listReplayEligibleIssues = `-- name: ListReplayEligibleIssues :many
+SELECT id, number, title, status, updated_at
+FROM issue
+WHERE workspace_id = $1
+  AND status = 'done'
+ORDER BY updated_at DESC
+LIMIT $2
+`
+
+type ListReplayEligibleIssuesParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Limit       int32       `json:"limit"`
+}
+
+type ListReplayEligibleIssuesRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	Number    int32              `json:"number"`
+	Title     string             `json:"title"`
+	Status    string             `json:"status"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+// Issues eligible to be replayed by the multica_replay benchmark adapter.
+// v1 surfaces only `done` issues (the only "completed" state in Multica's
+// issue lifecycle); the suite-creation flow attaches a reference solution
+// per chosen issue.
+func (q *Queries) ListReplayEligibleIssues(ctx context.Context, arg ListReplayEligibleIssuesParams) ([]ListReplayEligibleIssuesRow, error) {
+	rows, err := q.db.Query(ctx, listReplayEligibleIssues, arg.WorkspaceID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListReplayEligibleIssuesRow{}
+	for rows.Next() {
+		var i ListReplayEligibleIssuesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Number,
+			&i.Title,
+			&i.Status,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markIssueFirstExecuted = `-- name: MarkIssueFirstExecuted :one
 
 UPDATE issue

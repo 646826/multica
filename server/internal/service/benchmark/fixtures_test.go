@@ -186,3 +186,27 @@ func newFixtureAgent(t *testing.T, tx fixtureWorkspace, spec agentSpec) pgtype.U
 	}
 	return agentID
 }
+
+// newFixtureIssue inserts a `done` issue tied to the fixture workspace.
+// Returns the issue id, number, title, and description so tests can assert
+// against them. Cleanup happens via the workspace CASCADE registered in
+// newFixtureWorkspace.
+func newFixtureIssue(t *testing.T, tx fixtureWorkspace, title, description string) (id pgtype.UUID, number int32, retTitle, retDesc string) {
+	t.Helper()
+	ctx := context.Background()
+	seq := fixtureSeq.Add(1)
+	num := int32(seq) //nolint:gosec // seq fits int32 for the lifetime of a test process
+
+	var idStr string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO issue (
+			workspace_id, title, description, status, priority,
+			creator_type, creator_id, number, position
+		)
+		VALUES ($1, $2, $3, 'done', 'none', 'member', $4, $5, 0)
+		RETURNING id
+	`, tx.WorkspaceID, title, description, tx.UserID, num).Scan(&idStr); err != nil {
+		t.Fatalf("insert issue: %v", err)
+	}
+	return mustParseUUID(t, idStr), num, title, description
+}

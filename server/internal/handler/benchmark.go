@@ -15,6 +15,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/service/benchmark"
 	"github.com/multica-ai/multica/server/internal/service/benchmark/adapter"
 	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // BenchmarkDeps wires the benchmark service layer into the HTTP handler.
@@ -26,6 +27,9 @@ type BenchmarkDeps struct {
 	Runs            *benchmark.RunService
 	EvaluatorPool   *benchmark.EvaluatorPoolService
 	AdapterRegistry *adapter.Registry
+	// Queries is used by handlers that need read-only access to tables
+	// without a dedicated service layer (e.g. ListReplayEligibleIssues).
+	Queries *db.Queries
 }
 
 // BenchmarkHandler exposes /api/benchmarks/* routes. It is a sibling of
@@ -68,6 +72,8 @@ const (
 	errRunNotComplete          = "run_not_complete"
 	errSummaryNotAvailable     = "summary_not_available"
 	errAdapterUnknown          = "adapter_unknown"
+	errReplayReferenceMissing  = "reference_solution_required"
+	errReplayIssueNotFound     = "replay_source_issue_not_found"
 )
 
 // SuiteResponse is the JSON shape for a benchmark_suite at the handler boundary.
@@ -360,6 +366,143 @@ func (h *BenchmarkHandler) SyncSuite(w http.ResponseWriter, r *http.Request) {
 		"resolved":     result.Resolved,
 		"unresolved":   result.Unresolved,
 	})
+}
+
+// replayEligibleIssueResponse is the JSON shape returned by
+// ListReplayEligibleIssues. Fields mirror the sqlc row, with UUID and
+// timestamp fields normalized to strings for the wire.
+type replayEligibleIssueResponse struct {
+	ID        string `json:"id"`
+	Number    int32  `json:"number"`
+	Title     string `json:"title"`
+	Status    string `json:"status"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// ListReplayEligibleIssues handles GET /api/benchmarks/replay/eligible-issues.
+//
+// Returns the workspace's `done` issues newest-first, suitable for the
+// SuiteCreate Replay-mode UI to pick from. `limit` query param is clamped
+// to [1, 200], default 50.
+func (h *BenchmarkHandler) ListReplayEligibleIssues(w http.ResponseWriter, r *http.Request) {
+	wsUUID, _, ok := resolveBenchmarkContext(w, r)
+	if !ok {
+		return
+	}
+	limit := int32(50)
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 && v <= 200 {
+			limit = int32(v)
+		}
+	}
+	rows, err := h.deps.Queries.ListReplayEligibleIssues(r.Context(), db.ListReplayEligibleIssuesParams{
+		WorkspaceID: wsUUID,
+		Limit:       limit,
+	})
+	if err != nil {
+		slog.Warn("benchmark.list_replay_eligible_issues_failed",
+			append(logger.RequestAttrs(r), "err", err, "workspace_id", uuidToString(wsUUID))...)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	items := make([]replayEligibleIssueResponse, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, replayEligibleIssueResponse{
+			ID:        uuidToString(row.ID),
+			Number:    row.Number,
+			Title:     row.Title,
+			Status:    row.Status,
+			UpdatedAt: timestampToString(row.UpdatedAt),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// createReplaySuiteRequest is the inbound JSON payload for
+// POST /api/benchmarks/replay/suites. Each instance attaches a
+// reference_solution; the server fills in title/description from the
+// source issue.
+type createReplaySuiteRequest struct {
+	Slug        string                            `json:"slug"`
+	DisplayName string                            `json:"display_name"`
+	Description string                            `json:"description,omitempty"`
+	Instances   []createReplaySuiteRequestInstance `json:"instances"`
+}
+
+type createReplaySuiteRequestInstance struct {
+	SourceIssueID     string `json:"source_issue_id"`
+	ReferenceSolution string `json:"reference_solution"`
+	ReferencePRURL    string `json:"reference_pr_url,omitempty"`
+}
+
+// CreateReplaySuite handles POST /api/benchmarks/replay/suites.
+//
+// Builds a multica_replay benchmark suite. Each instance is the id of a
+// completed Multica issue plus a frozen reference solution; the service
+// captures the issue's title/description into instance_meta_overrides so
+// later runs use a stable prompt even if the source issue is edited.
+func (h *BenchmarkHandler) CreateReplaySuite(w http.ResponseWriter, r *http.Request) {
+	var req createReplaySuiteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, errBadBody)
+		return
+	}
+
+	wsUUID, userUUID, ok := resolveBenchmarkContext(w, r)
+	if !ok {
+		return
+	}
+
+	instances := make([]benchmark.ReplayInstanceInput, 0, len(req.Instances))
+	for _, in := range req.Instances {
+		id, err := util.ParseUUID(in.SourceIssueID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, errBadID)
+			return
+		}
+		instances = append(instances, benchmark.ReplayInstanceInput{
+			SourceIssueID:     id,
+			ReferenceSolution: in.ReferenceSolution,
+			ReferencePRURL:    in.ReferencePRURL,
+		})
+	}
+
+	suite, err := h.deps.Suites.CreateReplaySuite(r.Context(), benchmark.CreateReplaySuiteInput{
+		WorkspaceID: wsUUID,
+		Slug:        req.Slug,
+		DisplayName: req.DisplayName,
+		Description: req.Description,
+		Instances:   instances,
+		CreatedBy:   userUUID,
+	})
+	switch {
+	case errors.Is(err, benchmark.ErrSuiteInstanceListEmpty):
+		writeError(w, http.StatusBadRequest, errInstanceListEmpty)
+		return
+	case errors.Is(err, benchmark.ErrReplayReferenceSolutionEmpty):
+		writeError(w, http.StatusBadRequest, errReplayReferenceMissing)
+		return
+	case errors.Is(err, benchmark.ErrReplaySourceIssueNotFound):
+		writeError(w, http.StatusNotFound, errReplayIssueNotFound)
+		return
+	case errors.Is(err, benchmark.ErrSuiteSlugTaken):
+		writeError(w, http.StatusConflict, errSlugTaken)
+		return
+	case err != nil:
+		slog.Warn("benchmark.create_replay_suite_failed",
+			append(logger.RequestAttrs(r), "err", err, "workspace_id", uuidToString(wsUUID), "slug", req.Slug)...)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+
+	slog.Info("benchmark.replay_suite_created",
+		append(logger.RequestAttrs(r),
+			"workspace_id", uuidToString(wsUUID),
+			"suite_id", uuidToString(suite.ID),
+			"slug", suite.Slug,
+			"instance_count", len(suite.InstanceIDs),
+		)...)
+	writeJSON(w, http.StatusCreated, suiteToResponse(suite))
 }
 
 // CaptureProfile handles POST /api/benchmarks/profiles.

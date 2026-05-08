@@ -2,6 +2,7 @@ package benchmark
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,16 +12,19 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/service/benchmark/adapter"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // Service-layer error sentinels. Callers can use errors.Is to distinguish
 // validation/conflict errors from infrastructure errors.
 var (
-	ErrSuiteInstanceListEmpty = errors.New("benchmark: suite instance list cannot be empty")
-	ErrSuiteSlugTaken         = errors.New("benchmark: suite slug already used in workspace")
-	ErrSuiteNotFound          = errors.New("benchmark: suite not found")
-	ErrSuiteAdapterUnknown    = errors.New("benchmark: suite adapter not registered")
+	ErrSuiteInstanceListEmpty       = errors.New("benchmark: suite instance list cannot be empty")
+	ErrSuiteSlugTaken               = errors.New("benchmark: suite slug already used in workspace")
+	ErrSuiteNotFound                = errors.New("benchmark: suite not found")
+	ErrSuiteAdapterUnknown          = errors.New("benchmark: suite adapter not registered")
+	ErrReplayReferenceSolutionEmpty = errors.New("benchmark: replay instance missing reference_solution")
+	ErrReplaySourceIssueNotFound    = errors.New("benchmark: replay source issue not found in workspace")
 )
 
 // Suite is the service-layer representation of benchmark_suite. It mirrors
@@ -34,9 +38,15 @@ type Suite struct {
 	DisplayName string
 	AdapterKind string
 	InstanceIDs []string
-	Description string
-	CreatedAt   pgtype.Timestamptz
-	CreatedBy   pgtype.UUID
+	// InstanceMetaOverrides is a per-instance map of opaque adapter meta blobs
+	// captured at suite-creation time. Used by adapters (e.g. multica_replay)
+	// that need to freeze the exact prompt/reference for an instance instead
+	// of re-resolving from a live catalog. Empty map for adapters that do not
+	// use overrides.
+	InstanceMetaOverrides map[string]json.RawMessage
+	Description           string
+	CreatedAt             pgtype.Timestamptz
+	CreatedBy             pgtype.UUID
 }
 
 // CreateSuiteInput is the validated input to SuiteService.Create.
@@ -189,15 +199,118 @@ func (s *SuiteService) SyncFromCatalog(
 }
 
 func rowToSuite(r db.BenchmarkSuite) Suite {
-	return Suite{
-		ID:          r.ID,
-		WorkspaceID: r.WorkspaceID,
-		Slug:        r.Slug,
-		DisplayName: r.DisplayName,
-		AdapterKind: r.AdapterKind,
-		InstanceIDs: r.InstanceIds,
-		Description: r.Description,
-		CreatedAt:   r.CreatedAt,
-		CreatedBy:   r.CreatedBy,
+	overrides := map[string]json.RawMessage{}
+	// instance_meta_overrides is JSONB NOT NULL DEFAULT '{}' (see migration
+	// 071), so every row carries at least an empty object. A decode failure
+	// here would mean a corrupt blob — fall back to empty rather than panicking
+	// the caller, since rowToSuite is also used on read paths where surfacing
+	// the underlying error is awkward.
+	if len(r.InstanceMetaOverrides) > 0 {
+		_ = json.Unmarshal(r.InstanceMetaOverrides, &overrides)
 	}
+	return Suite{
+		ID:                    r.ID,
+		WorkspaceID:           r.WorkspaceID,
+		Slug:                  r.Slug,
+		DisplayName:           r.DisplayName,
+		AdapterKind:           r.AdapterKind,
+		InstanceIDs:           r.InstanceIds,
+		InstanceMetaOverrides: overrides,
+		Description:           r.Description,
+		CreatedAt:             r.CreatedAt,
+		CreatedBy:             r.CreatedBy,
+	}
+}
+
+// ReplayInstanceInput is the per-instance input to CreateReplaySuite.
+// SourceIssueID points at a Multica issue in the same workspace; the issue's
+// title and description are captured into the instance_meta_overrides blob
+// so the suite remains stable even if the source issue is later edited.
+type ReplayInstanceInput struct {
+	SourceIssueID     pgtype.UUID
+	ReferenceSolution string
+	ReferencePRURL    string
+}
+
+// CreateReplaySuiteInput is the validated input to SuiteService.CreateReplaySuite.
+type CreateReplaySuiteInput struct {
+	WorkspaceID pgtype.UUID
+	Slug        string
+	DisplayName string
+	Description string
+	Instances   []ReplayInstanceInput
+	CreatedBy   pgtype.UUID
+}
+
+// CreateReplaySuite materializes a multica_replay benchmark suite from a list
+// of completed Multica issues. For each instance the source issue is read
+// from the database and its title/description are frozen into the suite's
+// instance_meta_overrides blob — keyed by the synthetic instance_id
+// (`multica-issue:<uuid>`) — so the run dispatcher can compose tasks without
+// touching the live issue row.
+//
+// Returns ErrSuiteInstanceListEmpty when the input has no instances,
+// ErrReplayReferenceSolutionEmpty when any instance lacks a reference,
+// ErrReplaySourceIssueNotFound when an issue id is unknown in the workspace,
+// and ErrSuiteSlugTaken on (workspace_id, slug) conflict.
+func (s *SuiteService) CreateReplaySuite(ctx context.Context, in CreateReplaySuiteInput) (Suite, error) {
+	if len(in.Instances) == 0 {
+		return Suite{}, ErrSuiteInstanceListEmpty
+	}
+	in.Slug = strings.TrimSpace(in.Slug)
+
+	ids := make([]string, 0, len(in.Instances))
+	overrides := make(map[string]adapter.ReplayInstanceMeta, len(in.Instances))
+	for _, inst := range in.Instances {
+		if strings.TrimSpace(inst.ReferenceSolution) == "" {
+			return Suite{}, ErrReplayReferenceSolutionEmpty
+		}
+		issueRow, err := s.q.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
+			ID:          inst.SourceIssueID,
+			WorkspaceID: in.WorkspaceID,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Suite{}, fmt.Errorf("%w: %s", ErrReplaySourceIssueNotFound, util.UUIDToString(inst.SourceIssueID))
+		}
+		if err != nil {
+			return Suite{}, fmt.Errorf("benchmark: fetch replay source issue: %w", err)
+		}
+		instID := "multica-issue:" + util.UUIDToString(inst.SourceIssueID)
+		ids = append(ids, instID)
+		desc := ""
+		if issueRow.Description.Valid {
+			desc = issueRow.Description.String
+		}
+		overrides[instID] = adapter.ReplayInstanceMeta{
+			SourceIssueID:          util.UUIDToString(inst.SourceIssueID),
+			SourceIssueNumber:      issueRow.Number,
+			SourceIssueTitle:       issueRow.Title,
+			SourceIssueDescription: desc,
+			ReferenceSolution:      inst.ReferenceSolution,
+			ReferencePRURL:         inst.ReferencePRURL,
+		}
+	}
+
+	overridesJSON, err := json.Marshal(overrides)
+	if err != nil {
+		return Suite{}, fmt.Errorf("benchmark: marshal replay overrides: %w", err)
+	}
+
+	row, err := s.q.CreateBenchmarkReplaySuite(ctx, db.CreateBenchmarkReplaySuiteParams{
+		WorkspaceID:           in.WorkspaceID,
+		Slug:                  in.Slug,
+		DisplayName:           in.DisplayName,
+		InstanceIds:           ids,
+		InstanceMetaOverrides: overridesJSON,
+		Description:           in.Description,
+		CreatedBy:             in.CreatedBy,
+	})
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return Suite{}, ErrSuiteSlugTaken
+		}
+		return Suite{}, err
+	}
+	return rowToSuite(row), nil
 }

@@ -13,6 +13,18 @@ WHERE workspace_id = $1
 ORDER BY position ASC, created_at DESC
 LIMIT $2 OFFSET $3;
 
+-- name: ListReplayEligibleIssues :many
+-- Issues eligible to be replayed by the multica_replay benchmark adapter.
+-- v1 surfaces only `done` issues (the only "completed" state in Multica's
+-- issue lifecycle); the suite-creation flow attaches a reference solution
+-- per chosen issue.
+SELECT id, number, title, status, updated_at
+FROM issue
+WHERE workspace_id = $1
+  AND status = 'done'
+ORDER BY updated_at DESC
+LIMIT $2;
+
 -- name: GetIssue :one
 SELECT * FROM issue
 WHERE id = $1;

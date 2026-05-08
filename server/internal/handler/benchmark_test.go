@@ -35,6 +35,7 @@ func newBenchmarkHandler(t *testing.T) *BenchmarkHandler {
 		Runs:            benchmark.NewRunService(testHandler.Queries, testPool, events.New()),
 		EvaluatorPool:   benchmark.NewEvaluatorPoolService(testHandler.Queries),
 		AdapterRegistry: registry,
+		Queries:         testHandler.Queries,
 	})
 }
 

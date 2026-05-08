@@ -144,6 +144,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		Runs:            benchmarkRuns,
 		EvaluatorPool:   benchmarkEvaluatorPool,
 		AdapterRegistry: benchmarkRegistry,
+		Queries:         queries,
 	})
 	evalJobsHandler := handler.NewEvalJobsHandler(benchmarkEvalJobs)
 
@@ -518,6 +519,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					})
 				})
 				r.Get("/leaderboard", benchmarkHandler.Leaderboard)
+				r.Route("/replay", func(r chi.Router) {
+					r.Get("/eligible-issues", benchmarkHandler.ListReplayEligibleIssues)
+					r.Post("/suites", benchmarkHandler.CreateReplaySuite)
+				})
 				r.Route("/evaluator-tokens", func(r chi.Router) {
 					r.Get("/", benchmarkHandler.ListEvaluatorTokens)
 					r.Post("/", benchmarkHandler.CreateEvaluatorToken)

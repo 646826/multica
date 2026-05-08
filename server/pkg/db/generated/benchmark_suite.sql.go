@@ -22,11 +22,55 @@ func (q *Queries) CountBenchmarkRunsForSuite(ctx context.Context, suiteID pgtype
 	return count, err
 }
 
+const createBenchmarkReplaySuite = `-- name: CreateBenchmarkReplaySuite :one
+INSERT INTO benchmark_suite (
+    workspace_id, slug, display_name, adapter_kind, instance_ids,
+    instance_meta_overrides, description, created_by
+) VALUES ($1, $2, $3, 'multica_replay', $4, $5, $6, $7)
+RETURNING id, workspace_id, slug, display_name, adapter_kind, instance_ids, description, created_at, created_by, instance_meta_overrides
+`
+
+type CreateBenchmarkReplaySuiteParams struct {
+	WorkspaceID           pgtype.UUID `json:"workspace_id"`
+	Slug                  string      `json:"slug"`
+	DisplayName           string      `json:"display_name"`
+	InstanceIds           []string    `json:"instance_ids"`
+	InstanceMetaOverrides []byte      `json:"instance_meta_overrides"`
+	Description           string      `json:"description"`
+	CreatedBy             pgtype.UUID `json:"created_by"`
+}
+
+func (q *Queries) CreateBenchmarkReplaySuite(ctx context.Context, arg CreateBenchmarkReplaySuiteParams) (BenchmarkSuite, error) {
+	row := q.db.QueryRow(ctx, createBenchmarkReplaySuite,
+		arg.WorkspaceID,
+		arg.Slug,
+		arg.DisplayName,
+		arg.InstanceIds,
+		arg.InstanceMetaOverrides,
+		arg.Description,
+		arg.CreatedBy,
+	)
+	var i BenchmarkSuite
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Slug,
+		&i.DisplayName,
+		&i.AdapterKind,
+		&i.InstanceIds,
+		&i.Description,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.InstanceMetaOverrides,
+	)
+	return i, err
+}
+
 const createBenchmarkSuite = `-- name: CreateBenchmarkSuite :one
 INSERT INTO benchmark_suite (
     workspace_id, slug, display_name, adapter_kind, instance_ids, description, created_by
 ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, workspace_id, slug, display_name, adapter_kind, instance_ids, description, created_at, created_by
+RETURNING id, workspace_id, slug, display_name, adapter_kind, instance_ids, description, created_at, created_by, instance_meta_overrides
 `
 
 type CreateBenchmarkSuiteParams struct {
@@ -60,6 +104,7 @@ func (q *Queries) CreateBenchmarkSuite(ctx context.Context, arg CreateBenchmarkS
 		&i.Description,
 		&i.CreatedAt,
 		&i.CreatedBy,
+		&i.InstanceMetaOverrides,
 	)
 	return i, err
 }
@@ -82,7 +127,7 @@ func (q *Queries) DeleteBenchmarkSuite(ctx context.Context, arg DeleteBenchmarkS
 }
 
 const getBenchmarkSuite = `-- name: GetBenchmarkSuite :one
-SELECT id, workspace_id, slug, display_name, adapter_kind, instance_ids, description, created_at, created_by FROM benchmark_suite WHERE id = $1 AND workspace_id = $2
+SELECT id, workspace_id, slug, display_name, adapter_kind, instance_ids, description, created_at, created_by, instance_meta_overrides FROM benchmark_suite WHERE id = $1 AND workspace_id = $2
 `
 
 type GetBenchmarkSuiteParams struct {
@@ -103,12 +148,13 @@ func (q *Queries) GetBenchmarkSuite(ctx context.Context, arg GetBenchmarkSuitePa
 		&i.Description,
 		&i.CreatedAt,
 		&i.CreatedBy,
+		&i.InstanceMetaOverrides,
 	)
 	return i, err
 }
 
 const getBenchmarkSuiteBySlug = `-- name: GetBenchmarkSuiteBySlug :one
-SELECT id, workspace_id, slug, display_name, adapter_kind, instance_ids, description, created_at, created_by FROM benchmark_suite WHERE workspace_id = $1 AND slug = $2
+SELECT id, workspace_id, slug, display_name, adapter_kind, instance_ids, description, created_at, created_by, instance_meta_overrides FROM benchmark_suite WHERE workspace_id = $1 AND slug = $2
 `
 
 type GetBenchmarkSuiteBySlugParams struct {
@@ -129,12 +175,13 @@ func (q *Queries) GetBenchmarkSuiteBySlug(ctx context.Context, arg GetBenchmarkS
 		&i.Description,
 		&i.CreatedAt,
 		&i.CreatedBy,
+		&i.InstanceMetaOverrides,
 	)
 	return i, err
 }
 
 const listBenchmarkSuites = `-- name: ListBenchmarkSuites :many
-SELECT id, workspace_id, slug, display_name, adapter_kind, instance_ids, description, created_at, created_by FROM benchmark_suite
+SELECT id, workspace_id, slug, display_name, adapter_kind, instance_ids, description, created_at, created_by, instance_meta_overrides FROM benchmark_suite
 WHERE workspace_id = $1
 ORDER BY created_at DESC
 `
@@ -158,6 +205,7 @@ func (q *Queries) ListBenchmarkSuites(ctx context.Context, workspaceID pgtype.UU
 			&i.Description,
 			&i.CreatedAt,
 			&i.CreatedBy,
+			&i.InstanceMetaOverrides,
 		); err != nil {
 			return nil, err
 		}
@@ -173,7 +221,7 @@ const updateBenchmarkSuite = `-- name: UpdateBenchmarkSuite :one
 UPDATE benchmark_suite
 SET display_name = $3, instance_ids = $4, description = $5
 WHERE id = $1 AND workspace_id = $2
-RETURNING id, workspace_id, slug, display_name, adapter_kind, instance_ids, description, created_at, created_by
+RETURNING id, workspace_id, slug, display_name, adapter_kind, instance_ids, description, created_at, created_by, instance_meta_overrides
 `
 
 type UpdateBenchmarkSuiteParams struct {
@@ -203,6 +251,7 @@ func (q *Queries) UpdateBenchmarkSuite(ctx context.Context, arg UpdateBenchmarkS
 		&i.Description,
 		&i.CreatedAt,
 		&i.CreatedBy,
+		&i.InstanceMetaOverrides,
 	)
 	return i, err
 }

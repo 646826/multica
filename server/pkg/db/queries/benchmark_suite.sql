@@ -4,6 +4,13 @@ INSERT INTO benchmark_suite (
 ) VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING *;
 
+-- name: CreateBenchmarkReplaySuite :one
+INSERT INTO benchmark_suite (
+    workspace_id, slug, display_name, adapter_kind, instance_ids,
+    instance_meta_overrides, description, created_by
+) VALUES ($1, $2, $3, 'multica_replay', $4, $5, $6, $7)
+RETURNING *;
+
 -- name: GetBenchmarkSuite :one
 SELECT * FROM benchmark_suite WHERE id = $1 AND workspace_id = $2;
 
