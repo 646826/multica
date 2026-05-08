@@ -15,13 +15,14 @@ import {
 } from "@multica/core/benchmarks";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
-import type { BenchmarkErrorCode, BenchmarkRun, RunStatus } from "@multica/core/types";
+import type { BenchmarkErrorCode, BenchmarkRun } from "@multica/core/types";
 import { Alert, AlertDescription, AlertTitle } from "@multica/ui/components/ui/alert";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { useNavigation } from "../navigation";
 import { PageHeader } from "../layout/page-header";
+import { StatusPill } from "./StatusPill";
 
 /**
  * Map a benchmark error code to a user-facing English message. The list
@@ -57,27 +58,6 @@ function messageForCode(code: BenchmarkErrorCode): string {
     case "bad_id":
       return "Invalid id.";
   }
-}
-
-/**
- * Visual treatment for each lifecycle state. Tailwind class strings are
- * inlined so the mapping stays exhaustive over `RunStatus` (a new state
- * would be a compile error).
- */
-function StatusPill({ status }: { status: RunStatus }) {
-  const cls: Record<RunStatus, string> = {
-    queued: "bg-muted text-muted-foreground",
-    submitting: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-200",
-    evaluating: "bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-200",
-    complete: "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-200",
-    failed: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200",
-    canceled: "bg-muted text-muted-foreground line-through",
-  };
-  return (
-    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${cls[status]}`}>
-      {status}
-    </span>
-  );
 }
 
 function ModeBadge({ mode }: { mode: BenchmarkRun["evaluator_mode"] }) {
