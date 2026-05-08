@@ -30,7 +30,7 @@ export default function BenchmarksLayout({ children }: { children: React.ReactNo
   const { t } = useT("benchmarks");
 
   const tabs: Tab[] = [
-    { key: "runs", href: null, enabled: false },
+    { key: "runs", href: wsPaths.benchmarkRuns(), enabled: true },
     { key: "suites", href: wsPaths.benchmarkSuites(), enabled: true },
     { key: "profiles", href: wsPaths.benchmarkProfiles(), enabled: true },
     { key: "leaderboard", href: null, enabled: false },
