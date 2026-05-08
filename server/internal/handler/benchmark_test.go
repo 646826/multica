@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/service/benchmark"
 )
 
@@ -23,7 +24,80 @@ func newBenchmarkHandler(t *testing.T) *BenchmarkHandler {
 	return NewBenchmarkHandler(BenchmarkDeps{
 		Suites:   benchmark.NewSuiteService(testHandler.Queries),
 		Profiles: benchmark.NewProfileService(testHandler.Queries),
+		Runs:     benchmark.NewRunService(testHandler.Queries, testPool, events.New()),
 	})
+}
+
+// cleanupBenchmarkRunsForSuite removes benchmark_run rows tied to a suite so
+// integration tests don't leak rows across runs. benchmark_task FK is
+// ON DELETE CASCADE per the migrations, so deleting the run is sufficient.
+func cleanupBenchmarkRunsForSuite(t *testing.T, suiteID string) {
+	t.Helper()
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(),
+			`DELETE FROM benchmark_run WHERE workspace_id = $1 AND suite_id = $2`,
+			testWorkspaceID, suiteID,
+		)
+	})
+}
+
+// seedBenchmarkRunFixtures creates a workspace-scoped suite + agent + profile
+// suitable for run-handler tests. Returns the suite UUID and profile UUID
+// (as strings) for the caller to use as request payload values. Cleanup of
+// the suite row is registered here; runs created against it are cleaned by
+// cleanupBenchmarkRunsForSuite, which the caller invokes once it has the suite id.
+func seedBenchmarkRunFixtures(t *testing.T, h *BenchmarkHandler, label string) (suiteID, profileID string) {
+	t.Helper()
+
+	suiteSlug := "run-suite-" + label + "-" + uuid.NewString()[:8]
+	cleanupSuiteSlug(t, suiteSlug)
+
+	w := httptest.NewRecorder()
+	h.CreateSuite(w, newRequest("POST", "/api/benchmarks/suites", map[string]any{
+		"slug":         suiteSlug,
+		"display_name": "Run suite " + label,
+		"adapter_kind": "programbench",
+		"instance_ids": []string{"abishekvashok__cmatrix.5c082c6"},
+		"description":  "fixture for run handler test",
+	}))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("seed suite: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var suite map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &suite); err != nil {
+		t.Fatalf("decode seeded suite: %v", err)
+	}
+	suiteID, _ = suite["id"].(string)
+	if suiteID == "" {
+		t.Fatalf("seeded suite has no id")
+	}
+
+	agentID := createBenchmarkTestAgent(t,
+		"Run Agent "+label+" "+uuid.NewString()[:8],
+		"Run handler fixture prompt",
+		"gpt-4o-mini",
+	)
+
+	profileSlug := "run-profile-" + label + "-" + uuid.NewString()[:8]
+	w2 := httptest.NewRecorder()
+	h.CaptureProfile(w2, newRequest("POST", "/api/benchmarks/profiles", map[string]any{
+		"slug":         profileSlug,
+		"display_name": "Run profile " + label,
+		"agent_id":     agentID,
+	}))
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("seed profile: expected 201, got %d: %s", w2.Code, w2.Body.String())
+	}
+	var profile map[string]any
+	if err := json.Unmarshal(w2.Body.Bytes(), &profile); err != nil {
+		t.Fatalf("decode seeded profile: %v", err)
+	}
+	profileID, _ = profile["id"].(string)
+	if profileID == "" {
+		t.Fatalf("seeded profile has no id")
+	}
+
+	return suiteID, profileID
 }
 
 // cleanupSuiteSlug removes a suite by slug to keep tests isolated when they
@@ -609,5 +683,236 @@ func TestBenchmarkHandler_DeleteProfile_204_And_404(t *testing.T) {
 	}
 	if notFound["error"] != "profile_not_found" {
 		t.Fatalf("expected error=profile_not_found, got %v", notFound["error"])
+	}
+}
+
+func TestBenchmarkHandler_StartRun_201(t *testing.T) {
+	h := newBenchmarkHandler(t)
+	suiteID, profileID := seedBenchmarkRunFixtures(t, h, "start201")
+	cleanupBenchmarkRunsForSuite(t, suiteID)
+
+	w := httptest.NewRecorder()
+	h.StartRun(w, newRequest("POST", "/api/benchmarks/runs", map[string]any{
+		"suite_id":       suiteID,
+		"profile_id":     profileID,
+		"display_name":   "Start 201",
+		"evaluator_mode": "managed",
+	}))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["status"] != "queued" {
+		t.Fatalf("status: expected queued, got %v", got["status"])
+	}
+	if got["suite_id"] != suiteID {
+		t.Fatalf("suite_id mismatch: %v vs %s", got["suite_id"], suiteID)
+	}
+	if got["profile_id"] != profileID {
+		t.Fatalf("profile_id mismatch: %v vs %s", got["profile_id"], profileID)
+	}
+	if got["evaluator_mode"] != "managed" {
+		t.Fatalf("evaluator_mode mismatch: %v", got["evaluator_mode"])
+	}
+	if id, ok := got["id"].(string); !ok || id == "" {
+		t.Fatalf("id missing: %v", got["id"])
+	}
+	if _, ok := got["suite_instance_ids"].([]any); !ok {
+		t.Fatalf("suite_instance_ids should be an array, got %#v", got["suite_instance_ids"])
+	}
+}
+
+func TestBenchmarkHandler_StartRun_400_OnBadEvaluatorMode(t *testing.T) {
+	h := newBenchmarkHandler(t)
+	suiteID, profileID := seedBenchmarkRunFixtures(t, h, "bad-eval")
+	cleanupBenchmarkRunsForSuite(t, suiteID)
+
+	w := httptest.NewRecorder()
+	h.StartRun(w, newRequest("POST", "/api/benchmarks/runs", map[string]any{
+		"suite_id":       suiteID,
+		"profile_id":     profileID,
+		"display_name":   "Bad eval",
+		"evaluator_mode": "bogus",
+	}))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["error"] != "invalid_evaluator_mode" {
+		t.Fatalf("expected error=invalid_evaluator_mode, got %v", got["error"])
+	}
+}
+
+func TestBenchmarkHandler_StartRun_404_OnUnknownSuite(t *testing.T) {
+	h := newBenchmarkHandler(t)
+	suiteID, profileID := seedBenchmarkRunFixtures(t, h, "unknown-suite")
+	cleanupBenchmarkRunsForSuite(t, suiteID)
+
+	bogusSuite := uuid.NewString()
+	w := httptest.NewRecorder()
+	h.StartRun(w, newRequest("POST", "/api/benchmarks/runs", map[string]any{
+		"suite_id":       bogusSuite,
+		"profile_id":     profileID,
+		"display_name":   "Unknown suite",
+		"evaluator_mode": "managed",
+	}))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["error"] != "suite_or_profile_not_found" {
+		t.Fatalf("expected error=suite_or_profile_not_found, got %v", got["error"])
+	}
+}
+
+func TestBenchmarkHandler_ListRuns_200(t *testing.T) {
+	h := newBenchmarkHandler(t)
+	suiteID, profileID := seedBenchmarkRunFixtures(t, h, "list")
+	cleanupBenchmarkRunsForSuite(t, suiteID)
+
+	wSeed := httptest.NewRecorder()
+	h.StartRun(wSeed, newRequest("POST", "/api/benchmarks/runs", map[string]any{
+		"suite_id":       suiteID,
+		"profile_id":     profileID,
+		"display_name":   "List me",
+		"evaluator_mode": "managed",
+	}))
+	if wSeed.Code != http.StatusCreated {
+		t.Fatalf("seed run: expected 201, got %d: %s", wSeed.Code, wSeed.Body.String())
+	}
+	var seeded map[string]any
+	if err := json.Unmarshal(wSeed.Body.Bytes(), &seeded); err != nil {
+		t.Fatalf("decode seeded run: %v", err)
+	}
+	seededID, _ := seeded["id"].(string)
+
+	w := httptest.NewRecorder()
+	h.ListRuns(w, newRequest("GET", "/api/benchmarks/runs", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("list: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var got struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	found := false
+	for _, item := range got.Items {
+		if item["id"] == seededID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("seeded run %q not found in list", seededID)
+	}
+}
+
+func TestBenchmarkHandler_GetRun_200_And_404(t *testing.T) {
+	h := newBenchmarkHandler(t)
+	suiteID, profileID := seedBenchmarkRunFixtures(t, h, "get")
+	cleanupBenchmarkRunsForSuite(t, suiteID)
+
+	wSeed := httptest.NewRecorder()
+	h.StartRun(wSeed, newRequest("POST", "/api/benchmarks/runs", map[string]any{
+		"suite_id":       suiteID,
+		"profile_id":     profileID,
+		"display_name":   "Get me",
+		"evaluator_mode": "managed",
+	}))
+	if wSeed.Code != http.StatusCreated {
+		t.Fatalf("seed run: %d %s", wSeed.Code, wSeed.Body.String())
+	}
+	var seeded map[string]any
+	if err := json.Unmarshal(wSeed.Body.Bytes(), &seeded); err != nil {
+		t.Fatalf("decode seeded run: %v", err)
+	}
+	id, _ := seeded["id"].(string)
+
+	// 200.
+	w2 := httptest.NewRecorder()
+	req := withURLParam(newRequest("GET", "/api/benchmarks/runs/"+id, nil), "id", id)
+	h.GetRun(w2, req)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("get: expected 200, got %d: %s", w2.Code, w2.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w2.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode get: %v", err)
+	}
+	if got["id"] != id {
+		t.Fatalf("get id mismatch: %v vs %s", got["id"], id)
+	}
+
+	// 404.
+	missing := uuid.NewString()
+	w3 := httptest.NewRecorder()
+	req3 := withURLParam(newRequest("GET", "/api/benchmarks/runs/"+missing, nil), "id", missing)
+	h.GetRun(w3, req3)
+	if w3.Code != http.StatusNotFound {
+		t.Fatalf("get missing: expected 404, got %d: %s", w3.Code, w3.Body.String())
+	}
+	var nf map[string]any
+	if err := json.Unmarshal(w3.Body.Bytes(), &nf); err != nil {
+		t.Fatalf("decode 404: %v", err)
+	}
+	if nf["error"] != "run_not_found" {
+		t.Fatalf("expected error=run_not_found, got %v", nf["error"])
+	}
+}
+
+func TestBenchmarkHandler_CancelRun_204_And_404(t *testing.T) {
+	h := newBenchmarkHandler(t)
+	suiteID, profileID := seedBenchmarkRunFixtures(t, h, "cancel")
+	cleanupBenchmarkRunsForSuite(t, suiteID)
+
+	wSeed := httptest.NewRecorder()
+	h.StartRun(wSeed, newRequest("POST", "/api/benchmarks/runs", map[string]any{
+		"suite_id":       suiteID,
+		"profile_id":     profileID,
+		"display_name":   "Cancel me",
+		"evaluator_mode": "managed",
+	}))
+	if wSeed.Code != http.StatusCreated {
+		t.Fatalf("seed run: %d %s", wSeed.Code, wSeed.Body.String())
+	}
+	var seeded map[string]any
+	if err := json.Unmarshal(wSeed.Body.Bytes(), &seeded); err != nil {
+		t.Fatalf("decode seeded run: %v", err)
+	}
+	id, _ := seeded["id"].(string)
+
+	// 204.
+	w2 := httptest.NewRecorder()
+	req := withURLParam(newRequest("DELETE", "/api/benchmarks/runs/"+id, nil), "id", id)
+	h.CancelRun(w2, req)
+	if w2.Code != http.StatusNoContent {
+		t.Fatalf("cancel: expected 204, got %d: %s", w2.Code, w2.Body.String())
+	}
+
+	// Cancel a never-existed run id → 404.
+	missing := uuid.NewString()
+	w3 := httptest.NewRecorder()
+	req3 := withURLParam(newRequest("DELETE", "/api/benchmarks/runs/"+missing, nil), "id", missing)
+	h.CancelRun(w3, req3)
+	if w3.Code != http.StatusNotFound {
+		t.Fatalf("cancel missing: expected 404, got %d: %s", w3.Code, w3.Body.String())
+	}
+	var nf map[string]any
+	if err := json.Unmarshal(w3.Body.Bytes(), &nf); err != nil {
+		t.Fatalf("decode 404: %v", err)
+	}
+	if nf["error"] != "run_not_found" {
+		t.Fatalf("expected error=run_not_found, got %v", nf["error"])
 	}
 }

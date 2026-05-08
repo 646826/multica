@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -20,6 +21,7 @@ import (
 type BenchmarkDeps struct {
 	Suites   *benchmark.SuiteService
 	Profiles *benchmark.ProfileService
+	Runs     *benchmark.RunService
 }
 
 // BenchmarkHandler exposes /api/benchmarks/* routes. It is a sibling of
@@ -49,9 +51,12 @@ const (
 	errBadUserID         = "bad_user_id"
 	errInstanceListEmpty = "instance_list_empty"
 	errSlugTaken         = "slug_taken"
-	errSuiteNotFound     = "suite_not_found"
-	errProfileNotFound   = "profile_not_found"
-	errAgentNotFound     = "agent_not_found"
+	errSuiteNotFound          = "suite_not_found"
+	errProfileNotFound        = "profile_not_found"
+	errAgentNotFound          = "agent_not_found"
+	errInvalidEvaluatorMode   = "invalid_evaluator_mode"
+	errSuiteOrProfileNotFound = "suite_or_profile_not_found"
+	errRunNotFound            = "run_not_found"
 )
 
 // SuiteResponse is the JSON shape for a benchmark_suite at the handler boundary.
@@ -424,6 +429,226 @@ func (h *BenchmarkHandler) DeleteProfile(w http.ResponseWriter, r *http.Request)
 	}
 	slog.Info("benchmark.profile_deleted",
 		append(logger.RequestAttrs(r), "workspace_id", uuidToString(wsUUID), "profile_id", id)...)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// RunResponse is the JSON shape for a benchmark_run at the handler boundary.
+//
+// BaseRunID is `omitempty` because not every run has a baseline (it is
+// optional metadata for diff-style comparisons). suite_instance_ids is the
+// frozen list captured from the suite at run creation time — see
+// RunService.StartRun for snapshot semantics.
+type RunResponse struct {
+	ID                       string   `json:"id"`
+	WorkspaceID              string   `json:"workspace_id"`
+	SuiteID                  string   `json:"suite_id"`
+	SuiteInstanceIDs         []string `json:"suite_instance_ids"`
+	ProfileID                string   `json:"profile_id"`
+	BaseRunID                string   `json:"base_run_id,omitempty"`
+	DisplayName              string   `json:"display_name"`
+	Status                   string   `json:"status"`
+	StatusReason             string   `json:"status_reason"`
+	Notes                    string   `json:"notes"`
+	EvaluatorMode            string   `json:"evaluator_mode"`
+	AdapterVersion           string   `json:"adapter_version"`
+	SubmissionTimeoutSeconds int32    `json:"submission_timeout_seconds"`
+	CreatedBy                string   `json:"created_by"`
+}
+
+func benchmarkRunToResponse(r benchmark.Run) RunResponse {
+	resp := RunResponse{
+		ID:                       uuidToString(r.ID),
+		WorkspaceID:              uuidToString(r.WorkspaceID),
+		SuiteID:                  uuidToString(r.SuiteID),
+		SuiteInstanceIDs:         r.SuiteInstanceIDs,
+		ProfileID:                uuidToString(r.ProfileID),
+		DisplayName:              r.DisplayName,
+		Status:                   r.Status,
+		StatusReason:             r.StatusReason,
+		Notes:                    r.Notes,
+		EvaluatorMode:            r.EvaluatorMode,
+		AdapterVersion:           r.AdapterVersion,
+		SubmissionTimeoutSeconds: r.SubmissionTimeoutSeconds,
+		CreatedBy:                uuidToString(r.CreatedBy),
+	}
+	if r.BaseRunID.Valid {
+		resp.BaseRunID = uuidToString(r.BaseRunID)
+	}
+	if resp.SuiteInstanceIDs == nil {
+		resp.SuiteInstanceIDs = []string{}
+	}
+	return resp
+}
+
+// startRunRequest is the inbound JSON payload for POST /api/benchmarks/runs.
+//
+// BaseRunID and AdapterVersion are optional. EvaluatorMode is validated by
+// the service layer (must be "managed" or "imported"); a bogus value here
+// surfaces as 400 invalid_evaluator_mode.
+type startRunRequest struct {
+	SuiteID        string `json:"suite_id"`
+	ProfileID      string `json:"profile_id"`
+	BaseRunID      string `json:"base_run_id,omitempty"`
+	DisplayName    string `json:"display_name"`
+	Notes          string `json:"notes,omitempty"`
+	EvaluatorMode  string `json:"evaluator_mode"`
+	AdapterVersion string `json:"adapter_version,omitempty"`
+}
+
+// StartRun handles POST /api/benchmarks/runs. Decodes the request, validates
+// the suite/profile UUIDs, and delegates to RunService.StartRun. The service
+// performs workspace-scoped suite+profile resolution and inserts a run with
+// status='queued'. Returns 201 with the freshly created RunResponse on success.
+func (h *BenchmarkHandler) StartRun(w http.ResponseWriter, r *http.Request) {
+	var req startRunRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, errBadBody)
+		return
+	}
+
+	wsUUID, userUUID, ok := resolveBenchmarkContext(w, r)
+	if !ok {
+		return
+	}
+
+	suiteID, ok := parseBenchmarkURLID(w, req.SuiteID)
+	if !ok {
+		return
+	}
+	profileID, ok := parseBenchmarkURLID(w, req.ProfileID)
+	if !ok {
+		return
+	}
+	var baseRunID pgtype.UUID
+	if req.BaseRunID != "" {
+		parsed, ok := parseBenchmarkURLID(w, req.BaseRunID)
+		if !ok {
+			return
+		}
+		baseRunID = parsed
+	}
+
+	run, err := h.deps.Runs.StartRun(r.Context(), benchmark.StartRunInput{
+		WorkspaceID:    wsUUID,
+		SuiteID:        suiteID,
+		ProfileID:      profileID,
+		BaseRunID:      baseRunID,
+		DisplayName:    req.DisplayName,
+		Notes:          req.Notes,
+		EvaluatorMode:  req.EvaluatorMode,
+		AdapterVersion: req.AdapterVersion,
+		CreatedBy:      userUUID,
+	})
+	switch {
+	case errors.Is(err, benchmark.ErrInvalidEvaluator):
+		writeError(w, http.StatusBadRequest, errInvalidEvaluatorMode)
+		return
+	case errors.Is(err, benchmark.ErrSuiteResolution):
+		writeError(w, http.StatusNotFound, errSuiteOrProfileNotFound)
+		return
+	case err != nil:
+		slog.Warn("benchmark.start_run_failed",
+			append(logger.RequestAttrs(r), "err", err, "workspace_id", uuidToString(wsUUID))...)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+
+	slog.Info("benchmark.run_created",
+		append(logger.RequestAttrs(r),
+			"workspace_id", uuidToString(run.WorkspaceID),
+			"run_id", uuidToString(run.ID),
+			"suite_id", uuidToString(run.SuiteID),
+			"profile_id", uuidToString(run.ProfileID),
+		)...)
+	writeJSON(w, http.StatusCreated, benchmarkRunToResponse(run))
+}
+
+// ListRuns handles GET /api/benchmarks/runs. Returns the most recent runs
+// in the workspace, newest first. Optional ?limit query param caps the
+// returned count between 1 and 200; defaults to 50.
+func (h *BenchmarkHandler) ListRuns(w http.ResponseWriter, r *http.Request) {
+	wsUUID, _, ok := resolveBenchmarkContext(w, r)
+	if !ok {
+		return
+	}
+
+	limit := int32(50)
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 {
+			if v > 200 {
+				v = 200
+			}
+			limit = int32(v)
+		}
+	}
+
+	runs, err := h.deps.Runs.ListRuns(r.Context(), wsUUID, limit)
+	if err != nil {
+		slog.Warn("benchmark.list_runs_failed",
+			append(logger.RequestAttrs(r), "err", err, "workspace_id", uuidToString(wsUUID))...)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	items := make([]RunResponse, 0, len(runs))
+	for _, run := range runs {
+		items = append(items, benchmarkRunToResponse(run))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// GetRun handles GET /api/benchmarks/runs/{id}.
+func (h *BenchmarkHandler) GetRun(w http.ResponseWriter, r *http.Request) {
+	wsUUID, _, ok := resolveBenchmarkContext(w, r)
+	if !ok {
+		return
+	}
+	id := chi.URLParam(r, "id")
+	idUUID, ok := parseBenchmarkURLID(w, id)
+	if !ok {
+		return
+	}
+	run, err := h.deps.Runs.GetRun(r.Context(), idUUID, wsUUID)
+	switch {
+	case errors.Is(err, benchmark.ErrRunNotFound):
+		writeError(w, http.StatusNotFound, errRunNotFound)
+		return
+	case err != nil:
+		slog.Warn("benchmark.get_run_failed",
+			append(logger.RequestAttrs(r), "err", err, "workspace_id", uuidToString(wsUUID), "run_id", id)...)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	writeJSON(w, http.StatusOK, benchmarkRunToResponse(run))
+}
+
+// CancelRun handles DELETE /api/benchmarks/runs/{id}.
+//
+// Marks the run as 'canceled' / 'user_canceled'. Pending downstream
+// dispatches detect the new status and skip work; this method only flips
+// the row. 204 on success, 404 if the run is not in the workspace.
+func (h *BenchmarkHandler) CancelRun(w http.ResponseWriter, r *http.Request) {
+	wsUUID, _, ok := resolveBenchmarkContext(w, r)
+	if !ok {
+		return
+	}
+	id := chi.URLParam(r, "id")
+	idUUID, ok := parseBenchmarkURLID(w, id)
+	if !ok {
+		return
+	}
+	err := h.deps.Runs.CancelRun(r.Context(), idUUID, wsUUID)
+	switch {
+	case errors.Is(err, benchmark.ErrRunNotFound):
+		writeError(w, http.StatusNotFound, errRunNotFound)
+		return
+	case err != nil:
+		slog.Warn("benchmark.cancel_run_failed",
+			append(logger.RequestAttrs(r), "err", err, "workspace_id", uuidToString(wsUUID), "run_id", id)...)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	slog.Info("benchmark.run_canceled",
+		append(logger.RequestAttrs(r), "workspace_id", uuidToString(wsUUID), "run_id", id)...)
 	w.WriteHeader(http.StatusNoContent)
 }
 
