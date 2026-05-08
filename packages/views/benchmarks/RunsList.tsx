@@ -11,6 +11,7 @@ import {
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
 import type { BenchmarkErrorCode, BenchmarkRun } from "@multica/core/types";
+import { timeAgo } from "@multica/core/utils";
 import { Alert, AlertDescription, AlertTitle } from "@multica/ui/components/ui/alert";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
@@ -206,6 +207,9 @@ function RunRow({ run, onOpen }: RunRowProps) {
       <td className="px-4 py-3">
         <ModeBadge mode={run.evaluator_mode} />
       </td>
+      <td className="px-4 py-3 text-xs text-muted-foreground">
+        {timeAgo(run.created_at)}
+      </td>
     </tr>
   );
 }
@@ -290,6 +294,9 @@ export default function RunsList() {
                       </th>
                       <th className="px-4 py-2 font-medium">
                         {t(($) => $.runs_list.col_mode)}
+                      </th>
+                      <th className="px-4 py-2 font-medium">
+                        {t(($) => $.runs_list.col_created)}
                       </th>
                     </tr>
                   </thead>

@@ -55,6 +55,9 @@ type Run struct {
 	AdapterVersion           string
 	SubmissionTimeoutSeconds int32
 	CreatedBy                pgtype.UUID
+	CreatedAt                pgtype.Timestamptz
+	StartedAt                pgtype.Timestamptz
+	CompletedAt              pgtype.Timestamptz
 }
 
 // StartRunInput is the validated input to RunService.StartRun.
@@ -711,5 +714,8 @@ func rowToRun(r db.BenchmarkRun) Run {
 		AdapterVersion:           r.AdapterVersion,
 		SubmissionTimeoutSeconds: r.SubmissionTimeoutSeconds,
 		CreatedBy:                r.CreatedBy,
+		CreatedAt:                r.CreatedAt,
+		StartedAt:                r.StartedAt,
+		CompletedAt:              r.CompletedAt,
 	}
 }

@@ -161,6 +161,9 @@ export interface BenchmarkRun {
   adapter_version: string;
   submission_timeout_seconds: number;
   created_by: string;
+  created_at: string;
+  started_at?: string;
+  completed_at?: string;
 }
 
 /** Inbound payload for `POST /api/benchmarks/runs`. */

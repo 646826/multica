@@ -655,6 +655,9 @@ type RunResponse struct {
 	AdapterVersion           string   `json:"adapter_version"`
 	SubmissionTimeoutSeconds int32    `json:"submission_timeout_seconds"`
 	CreatedBy                string   `json:"created_by"`
+	CreatedAt                string   `json:"created_at"`
+	StartedAt                string   `json:"started_at,omitempty"`
+	CompletedAt              string   `json:"completed_at,omitempty"`
 }
 
 func benchmarkRunToResponse(r benchmark.Run) RunResponse {
@@ -672,9 +675,16 @@ func benchmarkRunToResponse(r benchmark.Run) RunResponse {
 		AdapterVersion:           r.AdapterVersion,
 		SubmissionTimeoutSeconds: r.SubmissionTimeoutSeconds,
 		CreatedBy:                uuidToString(r.CreatedBy),
+		CreatedAt:                util.TimestampToString(r.CreatedAt),
 	}
 	if r.BaseRunID.Valid {
 		resp.BaseRunID = uuidToString(r.BaseRunID)
+	}
+	if r.StartedAt.Valid {
+		resp.StartedAt = util.TimestampToString(r.StartedAt)
+	}
+	if r.CompletedAt.Valid {
+		resp.CompletedAt = util.TimestampToString(r.CompletedAt)
 	}
 	if resp.SuiteInstanceIDs == nil {
 		resp.SuiteInstanceIDs = []string{}
