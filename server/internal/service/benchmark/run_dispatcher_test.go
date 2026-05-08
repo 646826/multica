@@ -133,6 +133,74 @@ func TestRunDispatcher_Tick_ResolvesAndCreatesTasks(t *testing.T) {
 	require.Equal(t, "submitting", payload["status"])
 }
 
+func TestRunDispatcher_Tick_HonorsSuiteOverrides(t *testing.T) {
+	ctx := context.Background()
+	tx := newFixtureWorkspace(t)
+
+	// Replay suite with one instance whose meta is frozen on the suite.
+	// The ReplayCatalog used below would happily Resolve() with an empty Meta,
+	// so the test asserts the override survived to benchmark_task.instance_meta
+	// rather than the catalog-supplied (empty) blob.
+	suiteSvc := benchmark.NewSuiteService(testQueries)
+	issueID, _, _, _ := newFixtureIssue(t, tx,
+		"Replay dispatcher fixture",
+		"reproduce + expected behaviour",
+	)
+	suite, err := suiteSvc.CreateReplaySuite(ctx, benchmark.CreateReplaySuiteInput{
+		WorkspaceID: tx.WorkspaceID,
+		Slug:        "replay-1",
+		DisplayName: "Replay 1",
+		Instances: []benchmark.ReplayInstanceInput{{
+			SourceIssueID:     issueID,
+			ReferenceSolution: "diff content here\n",
+		}},
+		CreatedBy: tx.UserID,
+	})
+	require.NoError(t, err)
+
+	agentID := newFixtureAgent(t, tx, agentSpec{
+		Name:         "ReplayDispatchAgent",
+		Model:        "claude-opus-4-7",
+		PromptSource: "# system\nreplay\n",
+	})
+	profile, err := benchmark.NewProfileService(testQueries).Capture(ctx, benchmark.CaptureProfileInput{
+		WorkspaceID: tx.WorkspaceID,
+		AgentID:     agentID,
+		Slug:        "p-replay",
+		DisplayName: "P Replay",
+		CapturedBy:  tx.UserID,
+	})
+	require.NoError(t, err)
+	run, err := benchmark.NewRunService(testQueries, testPool, &recordingPublisher{}).StartRun(ctx, benchmark.StartRunInput{
+		WorkspaceID:   tx.WorkspaceID,
+		SuiteID:       suite.ID,
+		ProfileID:     profile.ID,
+		DisplayName:   "r",
+		EvaluatorMode: "imported",
+		CreatedBy:     tx.UserID,
+	})
+	require.NoError(t, err)
+
+	// Real ReplayCatalog is registered. Its Resolve() returns empty Meta, so
+	// if the dispatcher ever consulted it for a replay instance the override
+	// would be lost — making this test a real regression guard.
+	reg := adapter.NewRegistry()
+	reg.RegisterCatalog(adapter.NewReplayCatalog())
+
+	pub := &recordingPublisher{}
+	d := benchmark.NewRunDispatcher(testQueries, testPool, reg, pub)
+	require.NoError(t, d.Tick(ctx))
+
+	tasks, err := testQueries.ListBenchmarkTasksByRun(ctx, run.ID)
+	require.NoError(t, err)
+	require.Len(t, tasks, 1)
+	require.Equal(t, "queued", tasks[0].Status)
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(tasks[0].InstanceMeta, &got))
+	require.Equal(t, "diff content here\n", got["reference_solution"])
+}
+
 func TestRunDispatcher_Tick_SkipsRunsWithUnknownAdapter(t *testing.T) {
 	ctx := context.Background()
 	ws := newFixtureWorkspace(t)

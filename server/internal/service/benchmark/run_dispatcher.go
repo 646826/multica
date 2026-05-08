@@ -136,21 +136,38 @@ func (d *RunDispatcher) dispatchOne(ctx context.Context, run db.BenchmarkRun) er
 		return nil
 	}
 
+	// Replay path: pre-baked per-instance meta on the suite wins over
+	// Catalog.Resolve. The dispatcher decodes it once per run; an absent
+	// or empty column leaves the map nil and we fall back to live catalog
+	// resolution as before.
+	var overridesByID map[string]json.RawMessage
+	if len(suite.InstanceMetaOverrides) > 0 {
+		if err := json.Unmarshal(suite.InstanceMetaOverrides, &overridesByID); err != nil {
+			return fmt.Errorf("decode suite overrides: %w", err)
+		}
+	}
+
 	qtx := d.q.WithTx(tx)
 	for _, instanceID := range run.SuiteInstanceIds {
 		meta := json.RawMessage(`{}`)
 		status := "queued"
 		reason := ""
 
-		inst, rerr := cat.Resolve(ctx, instanceID)
-		if rerr != nil {
-			// Unknown instance id is not a tick-level failure: we record
-			// it as a 'skipped' task with a stable status_reason so the
-			// run summary can still account for every requested instance.
-			status = "skipped"
-			reason = "unknown_instance"
-		} else if len(inst.Meta) > 0 {
-			meta = inst.Meta
+		if override, ok := overridesByID[instanceID]; ok && len(override) > 0 {
+			// Replay-style suite: the suite already carries the frozen meta
+			// for this instance; skip Catalog.Resolve entirely.
+			meta = override
+		} else {
+			inst, rerr := cat.Resolve(ctx, instanceID)
+			if rerr != nil {
+				// Unknown instance id is not a tick-level failure: we record
+				// it as a 'skipped' task with a stable status_reason so the
+				// run summary can still account for every requested instance.
+				status = "skipped"
+				reason = "unknown_instance"
+			} else if len(inst.Meta) > 0 {
+				meta = inst.Meta
+			}
 		}
 
 		if _, terr := qtx.CreateBenchmarkTask(ctx, db.CreateBenchmarkTaskParams{
