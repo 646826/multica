@@ -30,6 +30,10 @@ type BenchmarkDeps struct {
 	// Queries is used by handlers that need read-only access to tables
 	// without a dedicated service layer (e.g. ListReplayEligibleIssues).
 	Queries *db.Queries
+	// ReferenceFetcher resolves a reference PR/patch URL into raw unified-diff
+	// text. Optional; only the FetchReplayReference handler uses it. Wired in
+	// router.go from MULTICA_ADO_PAT / MULTICA_GITHUB_TOKEN env vars.
+	ReferenceFetcher *benchmark.ReferenceFetcher
 }
 
 // BenchmarkHandler exposes /api/benchmarks/* routes. It is a sibling of
@@ -74,6 +78,9 @@ const (
 	errAdapterUnknown          = "adapter_unknown"
 	errReplayReferenceMissing  = "reference_solution_required"
 	errReplayIssueNotFound     = "replay_source_issue_not_found"
+	errURLRequired             = "url_required"
+	errUnsupportedReferenceURL = "unsupported_reference_url"
+	errReferenceFetchFailed    = "reference_fetch_failed"
 )
 
 // SuiteResponse is the JSON shape for a benchmark_suite at the handler boundary.
@@ -503,6 +510,59 @@ func (h *BenchmarkHandler) CreateReplaySuite(w http.ResponseWriter, r *http.Requ
 			"instance_count", len(suite.InstanceIDs),
 		)...)
 	writeJSON(w, http.StatusCreated, suiteToResponse(suite))
+}
+
+// fetchReferenceRequest is the inbound JSON payload for
+// POST /api/benchmarks/replay/fetch-reference.
+type fetchReferenceRequest struct {
+	URL string `json:"url"`
+}
+
+// FetchReplayReference handles POST /api/benchmarks/replay/fetch-reference.
+//
+// Resolves a public PR / patch URL into the raw unified-diff text so the
+// frontend can prefill the reference_solution textarea on the Replay-mode
+// SuiteCreate form. Auth + workspace scoping mirrors the rest of the
+// /api/benchmarks/* tree; nothing about the response depends on workspace
+// state, but we keep the gate consistent so the route can never become an
+// open proxy for arbitrary URL fetches.
+//
+// Errors:
+//   400 bad_body / url_required   — payload shape problems.
+//   400 unsupported_reference_url — URL did not match a known provider.
+//   502 reference_fetch_failed    — upstream returned non-2xx or transport err.
+func (h *BenchmarkHandler) FetchReplayReference(w http.ResponseWriter, r *http.Request) {
+	if _, _, ok := resolveBenchmarkContext(w, r); !ok {
+		return
+	}
+
+	var req fetchReferenceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, errBadBody)
+		return
+	}
+	if strings.TrimSpace(req.URL) == "" {
+		writeError(w, http.StatusBadRequest, errURLRequired)
+		return
+	}
+
+	out, err := h.deps.ReferenceFetcher.FetchPatch(r.Context(), req.URL)
+	switch {
+	case errors.Is(err, benchmark.ErrUnsupportedReferenceURL):
+		writeError(w, http.StatusBadRequest, errUnsupportedReferenceURL)
+		return
+	case errors.Is(err, benchmark.ErrReferenceFetchFailed):
+		slog.Warn("benchmark.fetch_reference_failed",
+			append(logger.RequestAttrs(r), "url", req.URL, "err", err)...)
+		writeError(w, http.StatusBadGateway, errReferenceFetchFailed)
+		return
+	case err != nil:
+		slog.Warn("benchmark.fetch_reference_internal",
+			append(logger.RequestAttrs(r), "url", req.URL, "err", err)...)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // CaptureProfile handles POST /api/benchmarks/profiles.

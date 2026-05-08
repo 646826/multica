@@ -30,12 +30,13 @@ func newBenchmarkHandler(t *testing.T) *BenchmarkHandler {
 	registry := benchmarkadapter.NewRegistry()
 	registry.RegisterCatalog(benchmarkadapter.NewProgramBenchCatalog())
 	return NewBenchmarkHandler(BenchmarkDeps{
-		Suites:          benchmark.NewSuiteService(testHandler.Queries),
-		Profiles:        benchmark.NewProfileService(testHandler.Queries),
-		Runs:            benchmark.NewRunService(testHandler.Queries, testPool, events.New()),
-		EvaluatorPool:   benchmark.NewEvaluatorPoolService(testHandler.Queries),
-		AdapterRegistry: registry,
-		Queries:         testHandler.Queries,
+		Suites:           benchmark.NewSuiteService(testHandler.Queries),
+		Profiles:         benchmark.NewProfileService(testHandler.Queries),
+		Runs:             benchmark.NewRunService(testHandler.Queries, testPool, events.New()),
+		EvaluatorPool:    benchmark.NewEvaluatorPoolService(testHandler.Queries),
+		AdapterRegistry:  registry,
+		Queries:          testHandler.Queries,
+		ReferenceFetcher: benchmark.NewReferenceFetcher("", ""),
 	})
 }
 
@@ -1840,5 +1841,101 @@ func TestBenchmarkHandler_GetRunSummary_404_NoSummaryYet(t *testing.T) {
 	}
 	if got["error"] != "summary_not_available" {
 		t.Fatalf("expected error=summary_not_available, got %v", got["error"])
+	}
+}
+
+// TestBenchmarkHandler_FetchReplayReference_400_OnEmptyURL asserts the
+// handler rejects an empty url field with a stable machine code before any
+// network call is attempted.
+func TestBenchmarkHandler_FetchReplayReference_400_OnEmptyURL(t *testing.T) {
+	h := newBenchmarkHandler(t)
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/benchmarks/replay/fetch-reference", map[string]any{
+		"url": "",
+	})
+	h.FetchReplayReference(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["error"] != "url_required" {
+		t.Fatalf("expected error=url_required, got %v", got["error"])
+	}
+}
+
+// TestBenchmarkHandler_FetchReplayReference_400_OnUnsupportedURL asserts a
+// URL that doesn't match any known provider (GitHub PR / ADO PR / .patch /
+// .diff) surfaces as 400 unsupported_reference_url.
+func TestBenchmarkHandler_FetchReplayReference_400_OnUnsupportedURL(t *testing.T) {
+	h := newBenchmarkHandler(t)
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/benchmarks/replay/fetch-reference", map[string]any{
+		"url": "https://example.com/random",
+	})
+	h.FetchReplayReference(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["error"] != "unsupported_reference_url" {
+		t.Fatalf("expected error=unsupported_reference_url, got %v", got["error"])
+	}
+}
+
+// TestBenchmarkHandler_FetchReplayReference_502_OnFetchFail asserts a non-2xx
+// upstream response is mapped to 502 reference_fetch_failed. We point a fresh
+// ReferenceFetcher at an httptest.Server returning 500, then drive the
+// fetchPlain branch via a `.patch`-suffixed path on that server.
+func TestBenchmarkHandler_FetchReplayReference_502_OnFetchFail(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("testHandler not initialized (DATABASE_URL unreachable)")
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	registry := benchmarkadapter.NewRegistry()
+	registry.RegisterCatalog(benchmarkadapter.NewProgramBenchCatalog())
+
+	fetcher := benchmark.NewReferenceFetcher("", "")
+	fetcher.SetHTTPClient(srv.Client())
+
+	h := NewBenchmarkHandler(BenchmarkDeps{
+		Suites:           benchmark.NewSuiteService(testHandler.Queries),
+		Profiles:         benchmark.NewProfileService(testHandler.Queries),
+		Runs:             benchmark.NewRunService(testHandler.Queries, testPool, events.New()),
+		EvaluatorPool:    benchmark.NewEvaluatorPoolService(testHandler.Queries),
+		AdapterRegistry:  registry,
+		Queries:          testHandler.Queries,
+		ReferenceFetcher: fetcher,
+	})
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/benchmarks/replay/fetch-reference", map[string]any{
+		"url": srv.URL + "/missing.patch",
+	})
+	h.FetchReplayReference(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d: %s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["error"] != "reference_fetch_failed" {
+		t.Fatalf("expected error=reference_fetch_failed, got %v", got["error"])
 	}
 }

@@ -27,6 +27,13 @@ func NewReferenceFetcher(adoToken, githubToken string) *ReferenceFetcher {
 	}
 }
 
+// SetHTTPClient swaps the underlying *http.Client. Intended for tests in
+// other packages (e.g. handler) that need to point the fetcher at an
+// httptest.Server without exposing the field directly.
+func (f *ReferenceFetcher) SetHTTPClient(c *http.Client) {
+	f.httpClient = c
+}
+
 // FetchPatch detects the URL type and returns the unified-diff text.
 //
 // Supported:

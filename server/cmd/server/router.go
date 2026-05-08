@@ -142,13 +142,23 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	benchmarkEvaluatorPool := benchmarkservice.NewEvaluatorPoolService(queries)
 	benchmarkEvalJobs := benchmarkservice.NewEvalJobService(queries, pool, bus)
 
+	// ReferenceFetcher is shared across the FetchReplayReference handler and
+	// reads provider tokens from env: MULTICA_ADO_PAT for Azure DevOps PRs,
+	// MULTICA_GITHUB_TOKEN for private GitHub repos. Both are optional —
+	// public github.com diffs work unauthenticated.
+	benchmarkReferenceFetcher := benchmarkservice.NewReferenceFetcher(
+		os.Getenv("MULTICA_ADO_PAT"),
+		os.Getenv("MULTICA_GITHUB_TOKEN"),
+	)
+
 	benchmarkHandler := handler.NewBenchmarkHandler(handler.BenchmarkDeps{
-		Suites:          benchmarkSuites,
-		Profiles:        benchmarkProfiles,
-		Runs:            benchmarkRuns,
-		EvaluatorPool:   benchmarkEvaluatorPool,
-		AdapterRegistry: benchmarkRegistry,
-		Queries:         queries,
+		Suites:           benchmarkSuites,
+		Profiles:         benchmarkProfiles,
+		Runs:             benchmarkRuns,
+		EvaluatorPool:    benchmarkEvaluatorPool,
+		AdapterRegistry:  benchmarkRegistry,
+		Queries:          queries,
+		ReferenceFetcher: benchmarkReferenceFetcher,
 	})
 	evalJobsHandler := handler.NewEvalJobsHandler(benchmarkEvalJobs)
 
@@ -526,6 +536,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Route("/replay", func(r chi.Router) {
 					r.Get("/eligible-issues", benchmarkHandler.ListReplayEligibleIssues)
 					r.Post("/suites", benchmarkHandler.CreateReplaySuite)
+					r.Post("/fetch-reference", benchmarkHandler.FetchReplayReference)
 				})
 				r.Route("/evaluator-tokens", func(r chi.Router) {
 					r.Get("/", benchmarkHandler.ListEvaluatorTokens)
