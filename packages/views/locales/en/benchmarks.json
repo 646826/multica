@@ -111,6 +111,22 @@
     "partial_title": "Partial comparison",
     "partial_description": "Some instances exist in only one of the two runs."
   },
+  "leaderboard": {
+    "page_title": "Leaderboard",
+    "suite_label": "Suite",
+    "suite_placeholder": "Select a suite to view the leaderboard…",
+    "empty_no_suite": "Pick a suite from the dropdown above.",
+    "empty_no_runs": "No completed runs for this suite yet. Run a benchmark to populate the leaderboard.",
+    "loading": "Loading leaderboard…",
+    "error_title": "Couldn't load leaderboard",
+    "col_rank": "Rank",
+    "col_profile": "Profile",
+    "col_best_run": "Best run",
+    "col_resolved": "Resolved",
+    "col_avg_pr": "Avg pass rate",
+    "col_agg_pr": "Agg pass rate",
+    "col_completed": "Completed"
+  },
   "start_run": {
     "page_title": "Start run",
     "field_suite": "Suite",

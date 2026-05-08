@@ -9,10 +9,9 @@ import { useT } from "@multica/views/i18n";
 /**
  * Benchmarks dashboard sub-nav.
  *
- * Phase 0 ships with two enabled tabs (Suites, Profiles) and two
- * placeholders (Runs, Leaderboard) that arrive in Phase 1. Disabled
- * tabs render as non-interactive list items rather than links so
- * keyboard navigation and screen readers correctly skip them.
+ * All four tabs (Runs, Suites, Profiles, Leaderboard) are enabled.
+ * The disabled-tab branch is retained for forward compatibility — future
+ * phases may stage new tabs the same way.
  */
 type TabKey = "runs" | "suites" | "profiles" | "leaderboard";
 
@@ -33,7 +32,7 @@ export default function BenchmarksLayout({ children }: { children: React.ReactNo
     { key: "runs", href: wsPaths.benchmarkRuns(), enabled: true },
     { key: "suites", href: wsPaths.benchmarkSuites(), enabled: true },
     { key: "profiles", href: wsPaths.benchmarkProfiles(), enabled: true },
-    { key: "leaderboard", href: null, enabled: false },
+    { key: "leaderboard", href: wsPaths.benchmarkLeaderboard(), enabled: true },
   ];
 
   return (

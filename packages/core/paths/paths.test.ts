@@ -27,6 +27,7 @@ describe("paths.workspace(slug)", () => {
     expect(ws.benchmarkRunCompare("run_1", "run_2")).toBe(
       "/acme/benchmarks/runs/run_1/compare/run_2",
     );
+    expect(ws.benchmarkLeaderboard()).toBe("/acme/benchmarks/leaderboard");
   });
 
   it("URL-encodes special characters in ids", () => {

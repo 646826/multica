@@ -7,4 +7,5 @@ export { default as ProfileDetail } from "./ProfileDetail";
 export { default as RunsList } from "./RunsList";
 export { default as RunDetail } from "./RunDetail";
 export { default as RunCompare } from "./RunCompare";
+export { default as Leaderboard } from "./Leaderboard";
 export { default as StartRunWizard } from "./StartRunWizard";

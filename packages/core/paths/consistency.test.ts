@@ -31,6 +31,7 @@ describe("paths.workspace() shape", () => {
         "benchmarkProfiles",
         "benchmarkRuns",
         "benchmarkRunNew",
+        "benchmarkLeaderboard",
       ]),
     );
   });

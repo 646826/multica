@@ -111,6 +111,22 @@
     "partial_title": "部分对比",
     "partial_description": "部分实例只存在于两次 run 之一。"
   },
+  "leaderboard": {
+    "page_title": "排行榜",
+    "suite_label": "套件",
+    "suite_placeholder": "选择一个套件以查看排行榜…",
+    "empty_no_suite": "请从上方下拉菜单选择套件。",
+    "empty_no_runs": "此套件暂无已完成的 run。运行基准测试以填充排行榜。",
+    "loading": "加载排行榜中…",
+    "error_title": "加载排行榜失败",
+    "col_rank": "名次",
+    "col_profile": "档案",
+    "col_best_run": "最佳 run",
+    "col_resolved": "已解决",
+    "col_avg_pr": "平均通过率",
+    "col_agg_pr": "聚合通过率",
+    "col_completed": "完成时间"
+  },
   "start_run": {
     "page_title": "启动 run",
     "field_suite": "套件",

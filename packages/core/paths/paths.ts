@@ -41,6 +41,7 @@ function workspaceScoped(slug: string) {
     benchmarkRunNew: () => `${ws}/benchmarks/runs/new`,
     benchmarkRunCompare: (candId: string, baseId: string) =>
       `${ws}/benchmarks/runs/${encode(candId)}/compare/${encode(baseId)}`,
+    benchmarkLeaderboard: () => `${ws}/benchmarks/leaderboard`,
   };
 }
 
