@@ -15,3 +15,6 @@ RETURNING *;
 
 -- name: GetBenchmarkRunSummary :one
 SELECT * FROM benchmark_run_summary WHERE run_id = $1;
+
+-- name: ListBenchmarkRunSummariesByRunIDs :many
+SELECT * FROM benchmark_run_summary WHERE run_id = ANY($1::uuid[]);

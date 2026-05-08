@@ -32,6 +32,40 @@ func (q *Queries) GetBenchmarkRunSummary(ctx context.Context, runID pgtype.UUID)
 	return i, err
 }
 
+const listBenchmarkRunSummariesByRunIDs = `-- name: ListBenchmarkRunSummariesByRunIDs :many
+SELECT run_id, workspace_id, resolved_count, total_count, aggregate_pass_rate, average_pass_rate, errored_count, failure_categories, computed_at FROM benchmark_run_summary WHERE run_id = ANY($1::uuid[])
+`
+
+func (q *Queries) ListBenchmarkRunSummariesByRunIDs(ctx context.Context, dollar_1 []pgtype.UUID) ([]BenchmarkRunSummary, error) {
+	rows, err := q.db.Query(ctx, listBenchmarkRunSummariesByRunIDs, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BenchmarkRunSummary{}
+	for rows.Next() {
+		var i BenchmarkRunSummary
+		if err := rows.Scan(
+			&i.RunID,
+			&i.WorkspaceID,
+			&i.ResolvedCount,
+			&i.TotalCount,
+			&i.AggregatePassRate,
+			&i.AveragePassRate,
+			&i.ErroredCount,
+			&i.FailureCategories,
+			&i.ComputedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const upsertBenchmarkRunSummary = `-- name: UpsertBenchmarkRunSummary :one
 INSERT INTO benchmark_run_summary (
     run_id, workspace_id, resolved_count, total_count,

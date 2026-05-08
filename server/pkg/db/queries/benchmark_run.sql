@@ -39,3 +39,15 @@ SELECT
     COUNT(*) AS total
 FROM benchmark_task
 WHERE run_id = $1;
+
+-- name: ListCompleteRunsBySuiteSlug :many
+SELECT r.* FROM benchmark_run r
+JOIN benchmark_suite s ON s.id = r.suite_id
+WHERE r.workspace_id = $1
+  AND s.slug = $2
+  AND r.status = 'complete'
+ORDER BY r.completed_at DESC
+LIMIT $3;
+
+-- name: GetBenchmarkSuiteByWorkspaceAndSlug :one
+SELECT * FROM benchmark_suite WHERE workspace_id = $1 AND slug = $2;
