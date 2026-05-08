@@ -29,6 +29,8 @@ describe("paths.workspace() shape", () => {
         "benchmarks",
         "benchmarkSuites",
         "benchmarkProfiles",
+        "benchmarkRuns",
+        "benchmarkRunNew",
       ]),
     );
   });

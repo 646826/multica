@@ -36,6 +36,9 @@ function workspaceScoped(slug: string) {
     benchmarks: () => `${ws}/benchmarks`,
     benchmarkSuites: () => `${ws}/benchmarks/suites`,
     benchmarkProfiles: () => `${ws}/benchmarks/profiles`,
+    benchmarkRuns: () => `${ws}/benchmarks/runs`,
+    benchmarkRunDetail: (id: string) => `${ws}/benchmarks/runs/${encode(id)}`,
+    benchmarkRunNew: () => `${ws}/benchmarks/runs/new`,
   };
 }
 

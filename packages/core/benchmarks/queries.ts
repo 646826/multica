@@ -18,6 +18,9 @@ export const benchmarkKeys = {
   profiles: (wsId: string) => [...benchmarkKeys.all(wsId), "profiles"] as const,
   profile: (wsId: string, id: string) =>
     [...benchmarkKeys.all(wsId), "profile", id] as const,
+  runs: (wsId: string) => [...benchmarkKeys.all(wsId), "runs"] as const,
+  run: (wsId: string, id: string) =>
+    [...benchmarkKeys.all(wsId), "run", id] as const,
 };
 
 export function benchmarkSuiteListOptions(wsId: string) {
@@ -48,6 +51,21 @@ export function benchmarkProfileDetailOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: benchmarkKeys.profile(wsId, id),
     queryFn: () => api.getBenchmarkProfile(id),
+    enabled: Boolean(id),
+  });
+}
+
+export function benchmarkRunListOptions(wsId: string) {
+  return queryOptions({
+    queryKey: benchmarkKeys.runs(wsId),
+    queryFn: () => api.listBenchmarkRuns().then((r) => r.items),
+  });
+}
+
+export function benchmarkRunDetailOptions(wsId: string, id: string) {
+  return queryOptions({
+    queryKey: benchmarkKeys.run(wsId, id),
+    queryFn: () => api.getBenchmarkRun(id),
     enabled: Boolean(id),
   });
 }

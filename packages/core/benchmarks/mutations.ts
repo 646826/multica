@@ -2,7 +2,11 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { useWorkspaceId } from "../hooks";
 import { benchmarkKeys } from "./queries";
-import type { CaptureProfileRequest, CreateSuiteRequest } from "../types";
+import type {
+  CaptureProfileRequest,
+  CreateSuiteRequest,
+  StartRunRequest,
+} from "../types";
 
 export function useCreateBenchmarkSuite() {
   const qc = useQueryClient();
@@ -49,6 +53,29 @@ export function useDeleteBenchmarkProfile() {
     onSuccess: (_data, id) => {
       qc.invalidateQueries({ queryKey: benchmarkKeys.profiles(wsId) });
       qc.removeQueries({ queryKey: benchmarkKeys.profile(wsId, id) });
+    },
+  });
+}
+
+export function useStartBenchmarkRun() {
+  const wsId = useWorkspaceId();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: StartRunRequest) => api.startBenchmarkRun(input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: benchmarkKeys.runs(wsId) });
+    },
+  });
+}
+
+export function useCancelBenchmarkRun() {
+  const wsId = useWorkspaceId();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.cancelBenchmarkRun(id),
+    onSuccess: (_, id) => {
+      void qc.invalidateQueries({ queryKey: benchmarkKeys.runs(wsId) });
+      void qc.invalidateQueries({ queryKey: benchmarkKeys.run(wsId, id) });
     },
   });
 }
