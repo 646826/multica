@@ -171,6 +171,12 @@ func TestTaskDispatcher_OnSubmissionEvent_AdvancesTaskInManagedMode(t *testing.T
 	require.Len(t, jobs, 1, "managed mode should enqueue exactly one eval_job")
 	require.Equal(t, "pending", jobs[0].State)
 	require.Equal(t, "programbench", jobs[0].AdapterKind)
+
+	// The benchmark issue should be auto-closed so it stops appearing on
+	// the workspace board after the agent submits.
+	issue, err := testQueries.GetIssue(ctx, task.IssueID)
+	require.NoError(t, err)
+	require.Equal(t, "done", issue.Status)
 }
 
 func TestTaskDispatcher_OnSubmissionEvent_NoEvalJobInImportedMode(t *testing.T) {
@@ -200,6 +206,11 @@ func TestTaskDispatcher_OnSubmissionEvent_NoEvalJobInImportedMode(t *testing.T) 
 	require.NoError(t, err)
 	require.Equal(t, "submitted", after.Status)
 	require.Empty(t, listEvalJobsForTask(t, task.ID), "imported mode must not enqueue eval_job")
+
+	// Issue auto-close is mode-independent.
+	issue, err := testQueries.GetIssue(ctx, task.IssueID)
+	require.NoError(t, err)
+	require.Equal(t, "done", issue.Status)
 }
 
 func TestTaskDispatcher_OnSubmissionEvent_IgnoresWrongFilename(t *testing.T) {

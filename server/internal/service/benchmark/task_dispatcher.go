@@ -411,6 +411,25 @@ func (d *TaskDispatcher) OnSubmissionEvent(ctx context.Context, ev SubmissionEve
 		}
 	}
 
+	// Close the linked issue so the workspace board doesn't keep showing
+	// a benchmark issue once the agent has submitted. The submission row
+	// in benchmark_task is the authoritative state from here on; the
+	// issue was only the carrier for the agent prompt. Best-effort: if
+	// the close fails (e.g. someone manually moved the issue out of an
+	// updatable state) we log and keep the submission valid.
+	if task.IssueID.Valid {
+		if _, err := qtx.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+			ID:     task.IssueID,
+			Status: "done",
+		}); err != nil {
+			slog.Warn("benchmark.task_dispatcher.close_issue_failed",
+				"task_id", util.UUIDToString(task.ID),
+				"issue_id", util.UUIDToString(task.IssueID),
+				"err", err,
+			)
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit tx: %w", err)
 	}
