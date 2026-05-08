@@ -22,6 +22,7 @@ var (
 	ErrSuiteResolution         = errors.New("benchmark: suite or profile not found in workspace")
 	ErrInvalidEvaluator        = errors.New("benchmark: evaluator_mode must be 'managed' or 'imported'")
 	ErrTaskNotFoundForInstance = errors.New("benchmark: task not found for run+instance")
+	ErrRunNotComplete          = errors.New("benchmark: run is not complete; cannot compare")
 )
 
 // Default per-task submission timeout used when StartRunInput leaves it
@@ -314,6 +315,231 @@ func pgNumeric(f float64) pgtype.Numeric {
 	var n pgtype.Numeric
 	_ = n.Scan(fmt.Sprintf("%.5f", f))
 	return n
+}
+
+// CompareRuns compares two complete runs in the same workspace and returns
+// a service-layer ComparisonResult. Both runs must exist (workspace-scoped)
+// and both must be in status 'complete' — otherwise ErrRunNotFound or
+// ErrRunNotComplete is returned. The DB-shaped per-instance eval rows are
+// turned into the EvalResultView map the pure Compare function expects.
+func (s *RunService) CompareRuns(ctx context.Context, baseID, candID, workspaceID pgtype.UUID) (ComparisonResult, error) {
+	base, err := s.q.GetBenchmarkRun(ctx, db.GetBenchmarkRunParams{ID: baseID, WorkspaceID: workspaceID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ComparisonResult{}, ErrRunNotFound
+	}
+	if err != nil {
+		return ComparisonResult{}, fmt.Errorf("get base run: %w", err)
+	}
+	cand, err := s.q.GetBenchmarkRun(ctx, db.GetBenchmarkRunParams{ID: candID, WorkspaceID: workspaceID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ComparisonResult{}, ErrRunNotFound
+	}
+	if err != nil {
+		return ComparisonResult{}, fmt.Errorf("get cand run: %w", err)
+	}
+
+	if base.Status != "complete" || cand.Status != "complete" {
+		return ComparisonResult{}, ErrRunNotComplete
+	}
+
+	baseSummary, err := s.q.GetBenchmarkRunSummary(ctx, baseID)
+	if err != nil {
+		return ComparisonResult{}, fmt.Errorf("get base summary: %w", err)
+	}
+	candSummary, err := s.q.GetBenchmarkRunSummary(ctx, candID)
+	if err != nil {
+		return ComparisonResult{}, fmt.Errorf("get cand summary: %w", err)
+	}
+
+	baseEvals, err := s.q.ListBenchmarkEvalResultsForRun(ctx, baseID)
+	if err != nil {
+		return ComparisonResult{}, fmt.Errorf("list base eval_results: %w", err)
+	}
+	candEvals, err := s.q.ListBenchmarkEvalResultsForRun(ctx, candID)
+	if err != nil {
+		return ComparisonResult{}, fmt.Errorf("list cand eval_results: %w", err)
+	}
+
+	baseEvalMap, err := evalRowsToMap(ctx, s.q, baseEvals)
+	if err != nil {
+		return ComparisonResult{}, fmt.Errorf("map base eval_results: %w", err)
+	}
+	candEvalMap, err := evalRowsToMap(ctx, s.q, candEvals)
+	if err != nil {
+		return ComparisonResult{}, fmt.Errorf("map cand eval_results: %w", err)
+	}
+
+	return Compare(
+		runSummaryToView(baseSummary, util.UUIDToString(baseID)),
+		runSummaryToView(candSummary, util.UUIDToString(candID)),
+		baseEvalMap,
+		candEvalMap,
+	), nil
+}
+
+// LeaderboardForSuite returns a dense-ranked leaderboard across complete runs
+// of the given suite within the workspace. The ranking honors best-run-per-
+// profile; profiles with no completed runs do not appear. Returns
+// ErrSuiteResolution when the suite slug is unknown in the workspace.
+func (s *RunService) LeaderboardForSuite(ctx context.Context, workspaceID pgtype.UUID, suiteSlug string) ([]LeaderboardRow, error) {
+	if _, err := s.q.GetBenchmarkSuiteByWorkspaceAndSlug(ctx, db.GetBenchmarkSuiteByWorkspaceAndSlugParams{
+		WorkspaceID: workspaceID,
+		Slug:        suiteSlug,
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrSuiteResolution
+		}
+		return nil, fmt.Errorf("get suite by slug: %w", err)
+	}
+
+	runs, err := s.q.ListCompleteRunsBySuiteSlug(ctx, db.ListCompleteRunsBySuiteSlugParams{
+		WorkspaceID: workspaceID,
+		Slug:        suiteSlug,
+		Limit:       leaderboardRunLimit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list complete runs: %w", err)
+	}
+	if len(runs) == 0 {
+		return []LeaderboardRow{}, nil
+	}
+
+	runIDs := make([]pgtype.UUID, len(runs))
+	for i, r := range runs {
+		runIDs[i] = r.ID
+	}
+
+	summaries, err := s.q.ListBenchmarkRunSummariesByRunIDs(ctx, runIDs)
+	if err != nil {
+		return nil, fmt.Errorf("list summaries: %w", err)
+	}
+	summByID := make(map[string]db.BenchmarkRunSummary, len(summaries))
+	for _, sm := range summaries {
+		summByID[util.UUIDToString(sm.RunID)] = sm
+	}
+
+	// Cache profile lookups so 50 runs from the same profile do not become
+	// 50 round-trips. The (workspace, profile_id) tuple is stable per row.
+	profCache := map[[16]byte]db.BenchmarkAgentProfile{}
+
+	rows := make([]LeaderboardRunRow, 0, len(runs))
+	for _, r := range runs {
+		sm, ok := summByID[util.UUIDToString(r.ID)]
+		if !ok {
+			// Run reached 'complete' but its summary row is missing — surface
+			// nothing rather than ranking on zeros.
+			continue
+		}
+		prof, ok := profCache[r.ProfileID.Bytes]
+		if !ok {
+			fetched, err := s.q.GetBenchmarkProfile(ctx, db.GetBenchmarkProfileParams{
+				ID:          r.ProfileID,
+				WorkspaceID: workspaceID,
+			})
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					continue
+				}
+				return nil, fmt.Errorf("get profile: %w", err)
+			}
+			prof = fetched
+			profCache[r.ProfileID.Bytes] = fetched
+		}
+		rows = append(rows, LeaderboardRunRow{
+			RunID:              util.UUIDToString(r.ID),
+			RunDisplayName:     r.DisplayName,
+			ProfileID:          util.UUIDToString(r.ProfileID),
+			ProfileSlug:        prof.Slug,
+			ProfileDisplayName: prof.DisplayName,
+			ResolvedCount:      int(sm.ResolvedCount),
+			TotalCount:         int(sm.TotalCount),
+			AveragePassRate:    pgNumericToFloat(sm.AveragePassRate),
+			AggregatePassRate:  pgNumericToFloat(sm.AggregatePassRate),
+			ErroredCount:       int(sm.ErroredCount),
+			CompletedAt:        util.TimestampToString(r.CompletedAt),
+		})
+	}
+	return Leaderboard(rows), nil
+}
+
+// leaderboardRunLimit caps how many recent complete runs the leaderboard
+// considers. 200 is enough headroom for "best per profile" across realistic
+// per-suite catalogs while keeping the query bounded.
+const leaderboardRunLimit = 200
+
+// runSummaryToView adapts the sqlc-shaped summary row into the pure-function
+// view consumed by Compare. The DB stores failure_categories as a JSONB
+// array of {Name, Count} objects (see finalizer.catCount); the view only
+// cares about the names, so we project to []string.
+func runSummaryToView(s db.BenchmarkRunSummary, runID string) RunSummaryView {
+	return RunSummaryView{
+		RunID:             runID,
+		ResolvedCount:     int(s.ResolvedCount),
+		TotalCount:        int(s.TotalCount),
+		ErroredCount:      int(s.ErroredCount),
+		AggregatePassRate: pgNumericToFloat(s.AggregatePassRate),
+		AveragePassRate:   pgNumericToFloat(s.AveragePassRate),
+		FailureCategories: failureCategoryNames(s.FailureCategories),
+	}
+}
+
+// failureCategoryNames decodes the JSONB failure_categories column written
+// by the finalizer (a list of {Name, Count}) and returns the names in their
+// stored order. Malformed/empty input yields an empty slice — the comparison
+// view should never see nil.
+func failureCategoryNames(raw []byte) []string {
+	if len(raw) == 0 {
+		return []string{}
+	}
+	var entries []struct {
+		Name  string `json:"Name"`
+		Count int    `json:"Count"`
+	}
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return []string{}
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.Name == "" {
+			continue
+		}
+		out = append(out, e.Name)
+	}
+	return out
+}
+
+// evalRowsToMap turns the sqlc-shaped eval_result rows into the per-instance
+// map Compare expects. The eval_result row only carries task_id, so we
+// resolve instance_id via benchmark_task. Any task lookup failure for an
+// individual row is surfaced rather than silently dropping the result.
+func evalRowsToMap(ctx context.Context, q *db.Queries, rows []db.BenchmarkEvalResult) (map[string]EvalResultView, error) {
+	out := make(map[string]EvalResultView, len(rows))
+	for _, r := range rows {
+		task, err := q.GetBenchmarkTask(ctx, db.GetBenchmarkTaskParams{
+			ID:          r.TaskID,
+			WorkspaceID: r.WorkspaceID,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("get task %s: %w", util.UUIDToString(r.TaskID), err)
+		}
+		out[task.InstanceID] = EvalResultView{
+			InstanceID: task.InstanceID,
+			Resolved:   r.Resolved,
+			PassRate:   pgNumericToFloat(r.PassRate),
+		}
+	}
+	return out, nil
+}
+
+// pgNumericToFloat is the read-side counterpart of pgNumeric. Float64Value is
+// the canonical pgx conversion for numeric(p,s); an invalid Numeric (NULL /
+// NaN) safely yields 0 because Float64Value returns Valid=false in that case.
+func pgNumericToFloat(n pgtype.Numeric) float64 {
+	v, err := n.Float64Value()
+	if err != nil || !v.Valid {
+		return 0
+	}
+	return v.Float64
 }
 
 func rowToRun(r db.BenchmarkRun) Run {
