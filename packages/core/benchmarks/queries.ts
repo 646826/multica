@@ -1,5 +1,6 @@
 import { queryOptions } from "@tanstack/react-query";
 import { api } from "../api";
+import { ApiError } from "../api/client";
 
 /**
  * Benchmark cache keys. Workspace-scoped lists / details for suites and
@@ -25,6 +26,10 @@ export const benchmarkKeys = {
     ["benchmarks", wsId, "compare", candID, baseID] as const,
   leaderboard: (wsId: string, suiteSlug: string) =>
     ["benchmarks", wsId, "leaderboard", suiteSlug] as const,
+  tasks: (wsId: string, runID: string) =>
+    ["benchmarks", wsId, "tasks", runID] as const,
+  summary: (wsId: string, runID: string) =>
+    ["benchmarks", wsId, "summary", runID] as const,
 };
 
 export function benchmarkSuiteListOptions(wsId: string) {
@@ -87,5 +92,34 @@ export function benchmarkLeaderboardOptions(wsId: string, suiteSlug: string) {
     queryKey: benchmarkKeys.leaderboard(wsId, suiteSlug),
     queryFn: () => api.getBenchmarkLeaderboard(suiteSlug).then((r) => r.items),
     enabled: Boolean(suiteSlug),
+  });
+}
+
+export function benchmarkRunTasksOptions(wsId: string, runID: string) {
+  return queryOptions({
+    queryKey: benchmarkKeys.tasks(wsId, runID),
+    queryFn: () => api.listBenchmarkRunTasks(runID).then((r) => r.items),
+    enabled: Boolean(runID),
+  });
+}
+
+/**
+ * Summary query for a run. The server returns 404 with error code
+ * `summary_not_available` while the run is still in progress and
+ * 404 `run_not_found` for an unknown id — both surface as ApiError
+ * with `status === 404`. Retrying either is wasteful (the summary
+ * row appears on a finalizer event, not by polling), so we short-
+ * circuit retries on any 404. Callers that want to refetch when a
+ * run completes should invalidate this key on the run-status event.
+ */
+export function benchmarkRunSummaryOptions(wsId: string, runID: string) {
+  return queryOptions({
+    queryKey: benchmarkKeys.summary(wsId, runID),
+    queryFn: () => api.getBenchmarkRunSummary(runID),
+    enabled: Boolean(runID),
+    retry: (_failureCount, err) => {
+      if (err instanceof ApiError && err.status === 404) return false;
+      return true;
+    },
   });
 }

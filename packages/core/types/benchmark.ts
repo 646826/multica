@@ -197,6 +197,60 @@ export interface ListLeaderboardResponse {
 }
 
 /**
+ * One row in the per-run task list (`GET
+ * /api/benchmarks/runs/:id/tasks`). Mirrors `RunTaskView` from the Go
+ * service projected to snake_case by the handler. Scoring fields
+ * (`resolved`, `passed_tests`, `total_tests`, `pass_rate`,
+ * `failed_categories`) are zero / empty when the task has not been
+ * scored yet — the eval_result row is absent. `issue_id` is omitted
+ * (not present on the JSON object) when the task is not linked to an
+ * issue.
+ */
+export interface BenchmarkRunTask {
+  id: string;
+  instance_id: string;
+  status: string;
+  status_reason: string;
+  issue_id?: string;
+  resolved: boolean;
+  passed_tests: number;
+  total_tests: number;
+  pass_rate: number;
+  failed_categories: string[];
+}
+
+/**
+ * Per-category aggregate emitted in `BenchmarkRunSummary.failure_categories`.
+ * Mirrors `FailureCategoryView` on the server.
+ */
+export interface FailureCategory {
+  name: string;
+  count: number;
+}
+
+/**
+ * Persisted summary row for a finalized run (`GET
+ * /api/benchmarks/runs/:id/summary`). Mirrors `BenchmarkRunSummaryView`
+ * from the Go service — snake_case is set explicitly via `json:"..."`
+ * tags. The endpoint returns 404 `summary_not_available` when the run
+ * exists but has not been finalized yet, distinguished from
+ * `run_not_found` by the error code in the body.
+ */
+export interface BenchmarkRunSummary {
+  run_id: string;
+  resolved_count: number;
+  total_count: number;
+  aggregate_pass_rate: number;
+  average_pass_rate: number;
+  errored_count: number;
+  failure_categories: FailureCategory[];
+}
+
+export interface ListBenchmarkRunTasksResponse {
+  items: BenchmarkRunTask[];
+}
+
+/**
  * Machine-readable error codes returned in the JSON body of failed
  * `/api/benchmarks/*` responses (see the comment block above the handler
  * methods in `packages/core/api/client.ts`). UI views map these to

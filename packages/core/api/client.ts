@@ -93,6 +93,8 @@ import type {
   ListBenchmarkRunsResponse,
   ComparisonResult,
   ListLeaderboardResponse,
+  ListBenchmarkRunTasksResponse,
+  BenchmarkRunSummary,
 } from "../types";
 import type { OnboardingCompletionPath } from "../onboarding/types";
 import { type Logger, noopLogger } from "../logger";
@@ -1354,6 +1356,24 @@ export class ApiClient {
   async getBenchmarkLeaderboard(suiteSlug: string): Promise<ListLeaderboardResponse> {
     return this.fetch<ListLeaderboardResponse>(
       `/api/benchmarks/leaderboard?suite=${encodeURIComponent(suiteSlug)}`,
+    );
+  }
+
+  async listBenchmarkRunTasks(runID: string): Promise<ListBenchmarkRunTasksResponse> {
+    return this.fetch<ListBenchmarkRunTasksResponse>(
+      `/api/benchmarks/runs/${runID}/tasks`,
+    );
+  }
+
+  // Returns the persisted summary for a finalized run. The endpoint
+  // returns 404 `summary_not_available` while the run is still running
+  // (vs. 404 `run_not_found` for an unknown id) — callers should branch
+  // on `body.error` to distinguish "not yet" from "never existed". The
+  // query helper in `packages/core/benchmarks/queries.ts` opts out of
+  // retries on 404 so the not-yet-finalized case doesn't thrash the API.
+  async getBenchmarkRunSummary(runID: string): Promise<BenchmarkRunSummary> {
+    return this.fetch<BenchmarkRunSummary>(
+      `/api/benchmarks/runs/${runID}/summary`,
     );
   }
 }
