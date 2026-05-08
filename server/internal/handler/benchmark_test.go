@@ -1663,3 +1663,177 @@ func TestBenchmarkHandler_Leaderboard_400_OnMissingSuite(t *testing.T) {
 		t.Fatalf("expected error=suite_required, got %v", got["error"])
 	}
 }
+
+// TestBenchmarkHandler_ListRunTasks_200 seeds a complete run with two tasks
+// (one resolved, one not) and asserts that the handler returns both with
+// the eval_result fields merged in.
+func TestBenchmarkHandler_ListRunTasks_200(t *testing.T) {
+	h := newBenchmarkHandler(t)
+	suiteID, profileID := seedCompareSuite(t, h, "lt200")
+	cleanupBenchmarkRunsForSuite(t, suiteID)
+
+	runID := seedCompleteRunHandler(t, h, completeRunHandlerSpec{
+		DisplayName:       "List tasks 200",
+		SuiteID:           suiteID,
+		ProfileID:         profileID,
+		Resolved:          1,
+		Total:             2,
+		AveragePassRate:   0.75,
+		AggregatePassRate: 0.75,
+		Evals: []handlerEvalSpec{
+			{InstanceID: "alpha__one.aaa", PassRate: 1.0, Resolved: true},
+			{InstanceID: "beta__two.bbb", PassRate: 0.5, Resolved: false},
+		},
+	})
+
+	w := httptest.NewRecorder()
+	req := withURLParam(newRequest("GET", "/api/benchmarks/runs/"+runID+"/tasks", nil), "id", runID)
+	h.ListRunTasks(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var got struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode 200: %v", err)
+	}
+	if len(got.Items) != 2 {
+		t.Fatalf("expected 2 task rows, got %d: %v", len(got.Items), got.Items)
+	}
+	// ListBenchmarkTasksByRun orders by instance_id ASC, so alpha precedes beta.
+	first := got.Items[0]
+	if first["instance_id"] != "alpha__one.aaa" {
+		t.Fatalf("expected first instance alpha__one.aaa, got %v", first["instance_id"])
+	}
+	if first["resolved"] != true {
+		t.Fatalf("expected first resolved=true, got %v", first["resolved"])
+	}
+	if pr, _ := first["pass_rate"].(float64); pr < 0.999 {
+		t.Fatalf("expected first pass_rate~1.0, got %v", first["pass_rate"])
+	}
+	second := got.Items[1]
+	if second["instance_id"] != "beta__two.bbb" {
+		t.Fatalf("expected second instance beta__two.bbb, got %v", second["instance_id"])
+	}
+	if second["resolved"] != false {
+		t.Fatalf("expected second resolved=false, got %v", second["resolved"])
+	}
+	if second["status"] != "scored" {
+		t.Fatalf("expected second status=scored, got %v", second["status"])
+	}
+}
+
+// TestBenchmarkHandler_ListRunTasks_404 asserts that a bogus run id within
+// the workspace surfaces as 404 run_not_found rather than a 200 with an
+// empty list (which would mask cross-workspace lookups).
+func TestBenchmarkHandler_ListRunTasks_404(t *testing.T) {
+	h := newBenchmarkHandler(t)
+	bogus := uuid.NewString()
+
+	w := httptest.NewRecorder()
+	req := withURLParam(newRequest("GET", "/api/benchmarks/runs/"+bogus+"/tasks", nil), "id", bogus)
+	h.ListRunTasks(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode 404: %v", err)
+	}
+	if got["error"] != "run_not_found" {
+		t.Fatalf("expected error=run_not_found, got %v", got["error"])
+	}
+}
+
+// TestBenchmarkHandler_GetRunSummary_200 seeds a finalized run with a
+// summary row and asserts that the handler returns the projected fields.
+func TestBenchmarkHandler_GetRunSummary_200(t *testing.T) {
+	h := newBenchmarkHandler(t)
+	suiteID, profileID := seedCompareSuite(t, h, "sum200")
+	cleanupBenchmarkRunsForSuite(t, suiteID)
+
+	runID := seedCompleteRunHandler(t, h, completeRunHandlerSpec{
+		DisplayName:       "Summary 200",
+		SuiteID:           suiteID,
+		ProfileID:         profileID,
+		Resolved:          2,
+		Total:             3,
+		Errored:           0,
+		AveragePassRate:   0.66667,
+		AggregatePassRate: 0.66667,
+		Evals: []handlerEvalSpec{
+			{InstanceID: "alpha__one.aaa", PassRate: 1.0, Resolved: true},
+			{InstanceID: "beta__two.bbb", PassRate: 1.0, Resolved: true},
+			{InstanceID: "gamma__three.ccc", PassRate: 0.0, Resolved: false},
+		},
+	})
+
+	w := httptest.NewRecorder()
+	req := withURLParam(newRequest("GET", "/api/benchmarks/runs/"+runID+"/summary", nil), "id", runID)
+	h.GetRunSummary(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var got benchmark.BenchmarkRunSummaryView
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode 200: %v", err)
+	}
+	if got.RunID != runID {
+		t.Fatalf("run_id mismatch: got %s, want %s", got.RunID, runID)
+	}
+	if got.ResolvedCount != 2 {
+		t.Fatalf("resolved_count: got %d, want 2", got.ResolvedCount)
+	}
+	if got.TotalCount != 3 {
+		t.Fatalf("total_count: got %d, want 3", got.TotalCount)
+	}
+	if got.AveragePassRate < 0.6 || got.AveragePassRate > 0.7 {
+		t.Fatalf("average_pass_rate: got %v, want ~0.66667", got.AveragePassRate)
+	}
+}
+
+// TestBenchmarkHandler_GetRunSummary_404_NoSummaryYet asserts the handler
+// distinguishes "run exists, no summary yet" (running run) from "run not
+// found" — the former returns 404 summary_not_available so the frontend
+// can render an in-progress placeholder.
+func TestBenchmarkHandler_GetRunSummary_404_NoSummaryYet(t *testing.T) {
+	h := newBenchmarkHandler(t)
+	suiteID, profileID := seedBenchmarkRunFixtures(t, h, "sum404nosummary")
+	cleanupBenchmarkRunsForSuite(t, suiteID)
+
+	// StartRun creates a queued run with no summary row yet — exactly the
+	// state we need to exercise the (run exists, summary missing) branch.
+	w0 := httptest.NewRecorder()
+	h.StartRun(w0, newRequest("POST", "/api/benchmarks/runs", map[string]any{
+		"suite_id":       suiteID,
+		"profile_id":     profileID,
+		"display_name":   "No summary yet",
+		"evaluator_mode": "imported",
+	}))
+	if w0.Code != http.StatusCreated {
+		t.Fatalf("start run: %d %s", w0.Code, w0.Body.String())
+	}
+	var run map[string]any
+	if err := json.Unmarshal(w0.Body.Bytes(), &run); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+	runID, _ := run["id"].(string)
+	if runID == "" {
+		t.Fatalf("run id empty")
+	}
+
+	w := httptest.NewRecorder()
+	req := withURLParam(newRequest("GET", "/api/benchmarks/runs/"+runID+"/summary", nil), "id", runID)
+	h.GetRunSummary(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode 404: %v", err)
+	}
+	if got["error"] != "summary_not_available" {
+		t.Fatalf("expected error=summary_not_available, got %v", got["error"])
+	}
+}

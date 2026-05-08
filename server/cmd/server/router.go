@@ -511,6 +511,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 						r.Post("/cancel", benchmarkHandler.CancelRun)
 						r.Post("/eval-results/{instance_id}", benchmarkHandler.ImportEvalResult)
 						r.Get("/compare", benchmarkHandler.CompareRun)
+						r.Get("/tasks", benchmarkHandler.ListRunTasks)
+						r.Get("/summary", benchmarkHandler.GetRunSummary)
 					})
 				})
 				r.Get("/leaderboard", benchmarkHandler.Leaderboard)

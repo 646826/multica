@@ -317,6 +317,159 @@ func pgNumeric(f float64) pgtype.Numeric {
 	return n
 }
 
+// RunTaskView is the service-layer projection of a benchmark_task row joined
+// with its eval_result (if any). Empty/zero scoring fields signal that the
+// task has not been scored yet — the eval_result row is absent.
+type RunTaskView struct {
+	ID               string
+	InstanceID       string
+	Status           string
+	StatusReason     string
+	IssueID          string // empty string if not set
+	Resolved         bool
+	PassedTests      int
+	TotalTests       int
+	PassRate         float64
+	FailedCategories []string
+}
+
+// FailureCategoryView is the per-category aggregate as exposed at the API
+// boundary. The persisted JSON in benchmark_run_summary.failure_categories
+// uses the capitalized keys produced by finalizer.catCount; UnmarshalJSON
+// accepts either casing so the API surface can stay snake/lowercase.
+type FailureCategoryView struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+// UnmarshalJSON accepts both the persisted {"Name","Count"} shape (written
+// by the finalizer) and the API-facing {"name","count"} shape. Decoding
+// directly into the lowercase struct would silently zero-out the values
+// when reading existing rows.
+func (f *FailureCategoryView) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Name      string `json:"Name"`
+		Count     int    `json:"Count"`
+		NameLower string `json:"name"`
+		CountLow  int    `json:"count"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	f.Name = raw.Name
+	if f.Name == "" {
+		f.Name = raw.NameLower
+	}
+	f.Count = raw.Count
+	if f.Count == 0 {
+		f.Count = raw.CountLow
+	}
+	return nil
+}
+
+// BenchmarkRunSummaryView is the service-layer projection of a
+// benchmark_run_summary row.
+type BenchmarkRunSummaryView struct {
+	RunID             string                `json:"run_id"`
+	ResolvedCount     int                   `json:"resolved_count"`
+	TotalCount        int                   `json:"total_count"`
+	AggregatePassRate float64               `json:"aggregate_pass_rate"`
+	AveragePassRate   float64               `json:"average_pass_rate"`
+	ErroredCount      int                   `json:"errored_count"`
+	FailureCategories []FailureCategoryView `json:"failure_categories"`
+}
+
+// ListTasksForRun returns each task in the run plus its eval_result fields
+// (if scored). The run is workspace-scoped: a task that exists but belongs
+// to another workspace's run returns ErrRunNotFound rather than leaking it.
+func (s *RunService) ListTasksForRun(ctx context.Context, runID, workspaceID pgtype.UUID) ([]RunTaskView, error) {
+	if _, err := s.q.GetBenchmarkRun(ctx, db.GetBenchmarkRunParams{ID: runID, WorkspaceID: workspaceID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrRunNotFound
+		}
+		return nil, fmt.Errorf("get run: %w", err)
+	}
+	tasks, err := s.q.ListBenchmarkTasksByRun(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("list tasks: %w", err)
+	}
+	evalRows, err := s.q.ListBenchmarkEvalResultsForRun(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("list eval_results: %w", err)
+	}
+
+	evalByTask := make(map[string]db.BenchmarkEvalResult, len(evalRows))
+	for _, e := range evalRows {
+		evalByTask[util.UUIDToString(e.TaskID)] = e
+	}
+
+	out := make([]RunTaskView, 0, len(tasks))
+	for _, t := range tasks {
+		v := RunTaskView{
+			ID:           util.UUIDToString(t.ID),
+			InstanceID:   t.InstanceID,
+			Status:       t.Status,
+			StatusReason: t.StatusReason,
+		}
+		if t.IssueID.Valid {
+			v.IssueID = util.UUIDToString(t.IssueID)
+		}
+		if e, ok := evalByTask[v.ID]; ok {
+			v.Resolved = e.Resolved
+			v.PassedTests = int(e.PassedTests)
+			v.TotalTests = int(e.TotalTests)
+			v.PassRate = pgNumericToFloat(e.PassRate)
+			var cats []string
+			if len(e.FailedCategories) > 0 {
+				_ = json.Unmarshal(e.FailedCategories, &cats)
+			}
+			if cats == nil {
+				cats = []string{}
+			}
+			v.FailedCategories = cats
+		} else {
+			v.FailedCategories = []string{}
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+// GetRunSummary returns the persisted summary row for a run, projected to
+// the service-layer view. Returns (nil, nil) when the run exists but the
+// summary row has not been written yet (run still in progress) — handlers
+// distinguish this from ErrRunNotFound to map it to a different error code.
+func (s *RunService) GetRunSummary(ctx context.Context, runID, workspaceID pgtype.UUID) (*BenchmarkRunSummaryView, error) {
+	if _, err := s.q.GetBenchmarkRun(ctx, db.GetBenchmarkRunParams{ID: runID, WorkspaceID: workspaceID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrRunNotFound
+		}
+		return nil, fmt.Errorf("get run: %w", err)
+	}
+	row, err := s.q.GetBenchmarkRunSummary(ctx, runID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get summary: %w", err)
+	}
+
+	cats := make([]FailureCategoryView, 0)
+	if len(row.FailureCategories) > 0 {
+		_ = json.Unmarshal(row.FailureCategories, &cats)
+	}
+
+	return &BenchmarkRunSummaryView{
+		RunID:             util.UUIDToString(row.RunID),
+		ResolvedCount:     int(row.ResolvedCount),
+		TotalCount:        int(row.TotalCount),
+		AggregatePassRate: pgNumericToFloat(row.AggregatePassRate),
+		AveragePassRate:   pgNumericToFloat(row.AveragePassRate),
+		ErroredCount:      int(row.ErroredCount),
+		FailureCategories: cats,
+	}, nil
+}
+
 // CompareRuns compares two complete runs in the same workspace and returns
 // a service-layer ComparisonResult. Both runs must exist (workspace-scoped)
 // and both must be in status 'complete' — otherwise ErrRunNotFound or

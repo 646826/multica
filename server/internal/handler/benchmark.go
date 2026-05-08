@@ -64,6 +64,7 @@ const (
 	errBaseRequired            = "base_required"
 	errSuiteRequired           = "suite_required"
 	errRunNotComplete          = "run_not_complete"
+	errSummaryNotAvailable     = "summary_not_available"
 )
 
 // SuiteResponse is the JSON shape for a benchmark_suite at the handler boundary.
@@ -961,6 +962,94 @@ func (h *BenchmarkHandler) CompareRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// taskViewToResponse projects a service-layer RunTaskView into the JSON
+// shape returned by ListRunTasks. issue_id is omitted when unset so the
+// frontend can distinguish "no linked issue" from "linked to UUID zero".
+func taskViewToResponse(t benchmark.RunTaskView) map[string]any {
+	out := map[string]any{
+		"id":                t.ID,
+		"instance_id":       t.InstanceID,
+		"status":            t.Status,
+		"status_reason":     t.StatusReason,
+		"resolved":          t.Resolved,
+		"passed_tests":      t.PassedTests,
+		"total_tests":       t.TotalTests,
+		"pass_rate":         t.PassRate,
+		"failed_categories": t.FailedCategories,
+	}
+	if t.IssueID != "" {
+		out["issue_id"] = t.IssueID
+	}
+	return out
+}
+
+// ListRunTasks handles GET /api/benchmarks/runs/{id}/tasks.
+//
+// Returns each benchmark_task in the run merged with its eval_result row
+// (if scored). Workspace-scoped; an unknown run id within the workspace
+// returns 404 run_not_found.
+func (h *BenchmarkHandler) ListRunTasks(w http.ResponseWriter, r *http.Request) {
+	wsUUID, _, ok := resolveBenchmarkContext(w, r)
+	if !ok {
+		return
+	}
+	id := chi.URLParam(r, "id")
+	idUUID, ok := parseBenchmarkURLID(w, id)
+	if !ok {
+		return
+	}
+	rows, err := h.deps.Runs.ListTasksForRun(r.Context(), idUUID, wsUUID)
+	switch {
+	case errors.Is(err, benchmark.ErrRunNotFound):
+		writeError(w, http.StatusNotFound, errRunNotFound)
+		return
+	case err != nil:
+		slog.Warn("benchmark.list_tasks_failed",
+			append(logger.RequestAttrs(r), "err", err, "workspace_id", uuidToString(wsUUID), "run_id", id)...)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	items := make([]map[string]any, 0, len(rows))
+	for _, t := range rows {
+		items = append(items, taskViewToResponse(t))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// GetRunSummary handles GET /api/benchmarks/runs/{id}/summary.
+//
+// Returns the persisted benchmark_run_summary projected to JSON. A run that
+// exists but has no summary yet (still running, never finalized) returns
+// 404 summary_not_available so the frontend can distinguish it from an
+// unknown run id (which returns 404 run_not_found).
+func (h *BenchmarkHandler) GetRunSummary(w http.ResponseWriter, r *http.Request) {
+	wsUUID, _, ok := resolveBenchmarkContext(w, r)
+	if !ok {
+		return
+	}
+	id := chi.URLParam(r, "id")
+	idUUID, ok := parseBenchmarkURLID(w, id)
+	if !ok {
+		return
+	}
+	sum, err := h.deps.Runs.GetRunSummary(r.Context(), idUUID, wsUUID)
+	switch {
+	case errors.Is(err, benchmark.ErrRunNotFound):
+		writeError(w, http.StatusNotFound, errRunNotFound)
+		return
+	case err != nil:
+		slog.Warn("benchmark.get_summary_failed",
+			append(logger.RequestAttrs(r), "err", err, "workspace_id", uuidToString(wsUUID), "run_id", id)...)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	if sum == nil {
+		writeError(w, http.StatusNotFound, errSummaryNotAvailable)
+		return
+	}
+	writeJSON(w, http.StatusOK, sum)
 }
 
 // Leaderboard handles GET /api/benchmarks/leaderboard?suite=<suite-slug>.
