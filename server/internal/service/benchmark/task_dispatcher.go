@@ -214,20 +214,20 @@ func (d *TaskDispatcher) issueOneTask(
 	}
 
 	issue, err := qtx.CreateIssueWithOrigin(ctx, db.CreateIssueWithOriginParams{
-		WorkspaceID:   run.WorkspaceID,
-		Title:         out.Title,
-		Description:   pgtype.Text{String: out.Description, Valid: out.Description != ""},
-		Status:        "todo",
-		Priority:      "none",
-		AssigneeType:  pgtype.Text{String: "agent", Valid: true},
-		AssigneeID:    profile.AgentID,
+		WorkspaceID:  run.WorkspaceID,
+		Title:        out.Title,
+		Description:  pgtype.Text{String: out.Description, Valid: out.Description != ""},
+		Status:       "todo",
+		Priority:     "none",
+		AssigneeType: pgtype.Text{String: "agent", Valid: true},
+		AssigneeID:   profile.AgentID,
 		// The issue.creator_type CHECK only allows 'member' or 'agent',
 		// so we attribute benchmark issues to the run creator (the user
 		// who clicked Start Run) instead of inventing a 'system' creator.
 		// Origin_type='benchmark_run' is what marks the issue as
 		// programmatically generated for downstream filtering.
-		CreatorType: "member",
-		CreatorID:   run.CreatedBy,
+		CreatorType:   "member",
+		CreatorID:     run.CreatedBy,
 		ParentIssueID: pgtype.UUID{},
 		Position:      0,
 		DueDate:       pgtype.Timestamptz{},

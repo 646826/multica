@@ -7,8 +7,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/multica-ai/multica/server/internal/service/benchmark"
-	"github.com/multica-ai/multica/server/pkg/protocol"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 func TestTimeoutWatchdog_Tick_MarksStaleTasksErrored(t *testing.T) {

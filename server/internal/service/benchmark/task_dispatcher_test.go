@@ -298,4 +298,3 @@ func listEvalJobsForTask(t *testing.T, taskID pgtype.UUID) []db.BenchmarkEvalJob
 	}
 	return out
 }
-

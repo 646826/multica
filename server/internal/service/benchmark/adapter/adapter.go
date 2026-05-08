@@ -128,7 +128,16 @@ func (r *Registry) RegisterComposer(c IssueComposer)  { r.composers[c.Kind()] = 
 func (r *Registry) RegisterParser(p SubmissionParser) { r.parsers[p.Kind()] = p }
 func (r *Registry) RegisterEvaluator(e Evaluator)     { r.evaluators[e.Kind()] = e }
 
-func (r *Registry) Catalog(kind string) (Catalog, bool)         { c, ok := r.catalogs[kind]; return c, ok }
-func (r *Registry) Composer(kind string) (IssueComposer, bool)  { c, ok := r.composers[kind]; return c, ok }
-func (r *Registry) Parser(kind string) (SubmissionParser, bool) { p, ok := r.parsers[kind]; return p, ok }
-func (r *Registry) Evaluator(kind string) (Evaluator, bool)     { e, ok := r.evaluators[kind]; return e, ok }
+func (r *Registry) Catalog(kind string) (Catalog, bool) { c, ok := r.catalogs[kind]; return c, ok }
+func (r *Registry) Composer(kind string) (IssueComposer, bool) {
+	c, ok := r.composers[kind]
+	return c, ok
+}
+func (r *Registry) Parser(kind string) (SubmissionParser, bool) {
+	p, ok := r.parsers[kind]
+	return p, ok
+}
+func (r *Registry) Evaluator(kind string) (Evaluator, bool) {
+	e, ok := r.evaluators[kind]
+	return e, ok
+}

@@ -11,8 +11,8 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/service/benchmark"
-	"github.com/multica-ai/multica/server/pkg/protocol"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // recordingPublisher implements benchmark.Publisher and captures events for assertions.
@@ -37,11 +37,11 @@ func (r *recordingPublisher) snapshot() []events.Event {
 
 // runFixture creates a workspace + suite + profile so tests can call StartRun.
 type runFixture struct {
-	WS        fixtureWorkspace
-	Suite     benchmark.Suite
-	Profile   benchmark.Profile
-	Pub       *recordingPublisher
-	Service   *benchmark.RunService
+	WS      fixtureWorkspace
+	Suite   benchmark.Suite
+	Profile benchmark.Profile
+	Pub     *recordingPublisher
+	Service *benchmark.RunService
 }
 
 func newRunFixture(t *testing.T) runFixture {
