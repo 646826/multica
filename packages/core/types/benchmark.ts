@@ -133,6 +133,70 @@ export interface ListBenchmarkRunsResponse {
 }
 
 /**
+ * Result of comparing two benchmark runs (`GET
+ * /api/benchmarks/runs/:cand/compare?base=:base`). Mirrors the Go
+ * `CompareResponse` DTO. `partial` is true when the two runs cover
+ * different instance sets — `missing_in_base` / `missing_in_cand`
+ * itemize the asymmetric instances and the deltas only consider the
+ * intersection.
+ */
+export interface ComparisonInstance {
+  instance_id: string;
+  base_pass_rate: number;
+  cand_pass_rate: number;
+}
+
+export interface ComparisonDelta {
+  resolved: number;
+  avg_pass_rate: number;
+  agg_pass_rate: number;
+  errored: number;
+}
+
+export interface ComparisonCategories {
+  added: string[];
+  cleared: string[];
+}
+
+export interface ComparisonResult {
+  base_run_id: string;
+  cand_run_id: string;
+  partial: boolean;
+  delta: ComparisonDelta;
+  improved: ComparisonInstance[];
+  regressed: ComparisonInstance[];
+  newly_resolved: ComparisonInstance[];
+  lost_resolved: ComparisonInstance[];
+  categories: ComparisonCategories;
+  missing_in_base?: string[];
+  missing_in_cand?: string[];
+}
+
+/**
+ * One row in the per-suite leaderboard (`GET
+ * /api/benchmarks/leaderboard?suite=:slug`). Each row pins a profile's
+ * best completed run on the suite, ranked by aggregate pass rate.
+ */
+export interface LeaderboardRow {
+  rank: number;
+  profile_id: string;
+  profile_slug: string;
+  profile_display_name: string;
+  best_run_id: string;
+  best_run_display_name: string;
+  resolved_count: number;
+  total_count: number;
+  average_pass_rate: number;
+  aggregate_pass_rate: number;
+  errored_count: number;
+  completed_at: string;
+}
+
+export interface ListLeaderboardResponse {
+  items: LeaderboardRow[];
+}
+
+/**
  * Machine-readable error codes returned in the JSON body of failed
  * `/api/benchmarks/*` responses (see the comment block above the handler
  * methods in `packages/core/api/client.ts`). UI views map these to

@@ -21,6 +21,10 @@ export const benchmarkKeys = {
   runs: (wsId: string) => [...benchmarkKeys.all(wsId), "runs"] as const,
   run: (wsId: string, id: string) =>
     [...benchmarkKeys.all(wsId), "run", id] as const,
+  compare: (wsId: string, candID: string, baseID: string) =>
+    ["benchmarks", wsId, "compare", candID, baseID] as const,
+  leaderboard: (wsId: string, suiteSlug: string) =>
+    ["benchmarks", wsId, "leaderboard", suiteSlug] as const,
 };
 
 export function benchmarkSuiteListOptions(wsId: string) {
@@ -67,5 +71,21 @@ export function benchmarkRunDetailOptions(wsId: string, id: string) {
     queryKey: benchmarkKeys.run(wsId, id),
     queryFn: () => api.getBenchmarkRun(id),
     enabled: Boolean(id),
+  });
+}
+
+export function benchmarkCompareOptions(wsId: string, candID: string, baseID: string) {
+  return queryOptions({
+    queryKey: benchmarkKeys.compare(wsId, candID, baseID),
+    queryFn: () => api.compareBenchmarkRun(candID, baseID),
+    enabled: Boolean(candID && baseID),
+  });
+}
+
+export function benchmarkLeaderboardOptions(wsId: string, suiteSlug: string) {
+  return queryOptions({
+    queryKey: benchmarkKeys.leaderboard(wsId, suiteSlug),
+    queryFn: () => api.getBenchmarkLeaderboard(suiteSlug).then((r) => r.items),
+    enabled: Boolean(suiteSlug),
   });
 }

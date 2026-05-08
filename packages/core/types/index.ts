@@ -56,6 +56,12 @@ export type {
   BenchmarkRun,
   StartRunRequest,
   ListBenchmarkRunsResponse,
+  ComparisonInstance,
+  ComparisonDelta,
+  ComparisonCategories,
+  ComparisonResult,
+  LeaderboardRow,
+  ListLeaderboardResponse,
 } from "./benchmark";
 export type {
   TimelineEntry,

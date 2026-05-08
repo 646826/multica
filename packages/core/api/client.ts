@@ -91,6 +91,8 @@ import type {
   BenchmarkRun,
   StartRunRequest,
   ListBenchmarkRunsResponse,
+  ComparisonResult,
+  ListLeaderboardResponse,
 } from "../types";
 import type { OnboardingCompletionPath } from "../onboarding/types";
 import { type Logger, noopLogger } from "../logger";
@@ -1341,5 +1343,17 @@ export class ApiClient {
 
   async cancelBenchmarkRun(id: string): Promise<void> {
     await this.fetch(`/api/benchmarks/runs/${id}/cancel`, { method: "POST" });
+  }
+
+  async compareBenchmarkRun(candID: string, baseID: string): Promise<ComparisonResult> {
+    return this.fetch<ComparisonResult>(
+      `/api/benchmarks/runs/${candID}/compare?base=${encodeURIComponent(baseID)}`,
+    );
+  }
+
+  async getBenchmarkLeaderboard(suiteSlug: string): Promise<ListLeaderboardResponse> {
+    return this.fetch<ListLeaderboardResponse>(
+      `/api/benchmarks/leaderboard?suite=${encodeURIComponent(suiteSlug)}`,
+    );
   }
 }
