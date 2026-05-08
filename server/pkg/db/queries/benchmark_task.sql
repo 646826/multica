@@ -44,3 +44,7 @@ SELECT t.* FROM benchmark_task t
 JOIN benchmark_run r ON r.id = t.run_id
 WHERE t.status = 'issued'
   AND t.created_at < now() - make_interval(secs => r.submission_timeout_seconds);
+
+-- name: CountActiveBenchmarkTasksByWorkspace :one
+SELECT COUNT(*) FROM benchmark_task
+WHERE workspace_id = $1 AND status IN ('issued', 'submitted', 'evaluating');

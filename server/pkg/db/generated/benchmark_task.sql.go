@@ -41,6 +41,18 @@ func (q *Queries) AttachIssueToTask(ctx context.Context, arg AttachIssueToTaskPa
 	return err
 }
 
+const countActiveBenchmarkTasksByWorkspace = `-- name: CountActiveBenchmarkTasksByWorkspace :one
+SELECT COUNT(*) FROM benchmark_task
+WHERE workspace_id = $1 AND status IN ('issued', 'submitted', 'evaluating')
+`
+
+func (q *Queries) CountActiveBenchmarkTasksByWorkspace(ctx context.Context, workspaceID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveBenchmarkTasksByWorkspace, workspaceID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createBenchmarkTask = `-- name: CreateBenchmarkTask :one
 INSERT INTO benchmark_task (
     run_id, workspace_id, instance_id, instance_meta, status, status_reason

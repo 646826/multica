@@ -240,6 +240,64 @@ func TestTaskDispatcher_OnSubmissionEvent_IgnoresWrongFilename(t *testing.T) {
 	require.Empty(t, listEvalJobsForTask(t, task.ID))
 }
 
+// TestTaskDispatcher_WorkspaceConcurrencyCap verifies the per-workspace
+// in-flight cap honored in dispatchRunTasks: with 5 queued tasks and a cap
+// of 2, exactly 2 should advance to 'issued' on the first Tick and the rest
+// should stay 'queued' until the next Tick (which we don't run here — the
+// point is that one Tick must NOT issue past the cap).
+func TestTaskDispatcher_WorkspaceConcurrencyCap(t *testing.T) {
+	ctx := context.Background()
+	f := newTaskDispatcherFixture(t, "imported", []string{
+		"cap__a.aaaaaa1",
+		"cap__b.bbbbbbb2",
+		"cap__c.ccccccc3",
+		"cap__d.ddddddd4",
+		"cap__e.eeeeeee5",
+	})
+
+	d := benchmark.NewTaskDispatcher(testQueries, testPool, f.Registry, f.Bus, nil)
+	d.SetWorkspaceMaxParallel(2)
+	require.NoError(t, d.Tick(ctx))
+
+	tasks, err := testQueries.ListBenchmarkTasksByRun(ctx, f.Run.ID)
+	require.NoError(t, err)
+	require.Len(t, tasks, 5)
+
+	var issued, queued int
+	for _, task := range tasks {
+		switch task.Status {
+		case "issued":
+			issued++
+			require.True(t, task.IssueID.Valid, "issued task should have issue_id set")
+		case "queued":
+			queued++
+			require.False(t, task.IssueID.Valid, "queued task should not have issue_id")
+		default:
+			t.Fatalf("unexpected status %q for instance %s", task.Status, task.InstanceID)
+		}
+	}
+	require.Equal(t, 2, issued, "exactly cap=2 tasks should be issued")
+	require.Equal(t, 3, queued, "the remaining 3 tasks should stay queued for the next tick")
+
+	// Sanity: the count query the dispatcher consults agrees with what we see.
+	active, err := testQueries.CountActiveBenchmarkTasksByWorkspace(ctx, f.WS.WorkspaceID)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), active)
+
+	// A second Tick with the same cap and no completed tasks must not issue
+	// any more work — the workspace is still at-cap.
+	require.NoError(t, d.Tick(ctx))
+	tasksAfter, err := testQueries.ListBenchmarkTasksByRun(ctx, f.Run.ID)
+	require.NoError(t, err)
+	var issuedAfter int
+	for _, task := range tasksAfter {
+		if task.Status == "issued" {
+			issuedAfter++
+		}
+	}
+	require.Equal(t, 2, issuedAfter, "cap must be honored on every tick, not just the first")
+}
+
 func TestTaskDispatcher_OnSubmissionEvent_IgnoresUnknownIssue(t *testing.T) {
 	ctx := context.Background()
 	f := newTaskDispatcherFixture(t, "managed", []string{"who__cares.99999ff"})

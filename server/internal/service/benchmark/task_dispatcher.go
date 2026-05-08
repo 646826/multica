@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -18,6 +20,18 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
+
+// defaultWorkspaceMaxParallel caps how many benchmark tasks may be in-flight
+// (issued / submitted / evaluating) within a single workspace at any time.
+// Keeps a single rogue benchmark run from saturating the workspace's agent
+// quota and competing with human-driven issues. Override via the
+// MULTICA_BENCHMARK_MAX_PARALLEL env var.
+const defaultWorkspaceMaxParallel = 4
+
+// envBenchmarkMaxParallel is the env var read at TaskDispatcher construction
+// to override defaultWorkspaceMaxParallel. Empty / non-positive / non-numeric
+// values fall back to the default.
+const envBenchmarkMaxParallel = "MULTICA_BENCHMARK_MAX_PARALLEL"
 
 // defaultTaskDispatcherInterval is the polling cadence for the create-issues
 // loop. Matches RunDispatcher / TimeoutWatchdog so the whole benchmark
@@ -57,6 +71,11 @@ type TaskDispatcher struct {
 	bus      *events.Bus
 	tasks    TaskEnqueuer
 	interval time.Duration
+	// workspaceMaxParallel caps the in-flight (issued/submitted/evaluating)
+	// benchmark_task rows per workspace. Tick stops issuing new tasks once
+	// the workspace is at-cap and resumes on the next tick after some tasks
+	// finish. Must be > 0; constructor enforces the floor.
+	workspaceMaxParallel int
 }
 
 // NewTaskDispatcher constructs a TaskDispatcher with the default poll
@@ -64,14 +83,37 @@ type TaskDispatcher struct {
 // and stops short of enqueueing an agent task; useful for tests that only
 // care about the issue/task transitions.
 func NewTaskDispatcher(q *db.Queries, pool *pgxpool.Pool, reg *adapter.Registry, bus *events.Bus, tasks TaskEnqueuer) *TaskDispatcher {
-	return &TaskDispatcher{
-		q:        q,
-		pool:     pool,
-		registry: reg,
-		bus:      bus,
-		tasks:    tasks,
-		interval: defaultTaskDispatcherInterval,
+	maxParallel := defaultWorkspaceMaxParallel
+	if v := os.Getenv(envBenchmarkMaxParallel); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxParallel = n
+		} else {
+			slog.Warn("benchmark.task_dispatcher.invalid_max_parallel_env",
+				"value", v,
+				"fallback", defaultWorkspaceMaxParallel,
+			)
+		}
 	}
+	return &TaskDispatcher{
+		q:                    q,
+		pool:                 pool,
+		registry:             reg,
+		bus:                  bus,
+		tasks:                tasks,
+		interval:             defaultTaskDispatcherInterval,
+		workspaceMaxParallel: maxParallel,
+	}
+}
+
+// SetWorkspaceMaxParallel overrides the per-workspace concurrency cap that
+// was resolved from env at construction. Intended for tests that want to
+// drive cap-related behavior without mutating process env. Values <= 0 are
+// ignored to keep the dispatcher in a valid state.
+func (d *TaskDispatcher) SetWorkspaceMaxParallel(n int) {
+	if n <= 0 {
+		return
+	}
+	d.workspaceMaxParallel = n
 }
 
 // Start subscribes to comment:created and runs Tick on a ticker until
@@ -157,7 +199,38 @@ func (d *TaskDispatcher) dispatchRunTasks(ctx context.Context, run db.BenchmarkR
 		return fmt.Errorf("list queued tasks: %w", err)
 	}
 
+	// Workspace-level concurrency cap: count in-flight (issued/submitted/
+	// evaluating) tasks across the entire workspace and refuse to start new
+	// ones once we're at-cap. This is a coarse-grained quota — finer per-run
+	// tuning lives in the run config — but it's enough to keep one benchmark
+	// run from monopolizing the workspace's agent slots. Each issue advances
+	// a task to 'issued', so we increment the local counter inline rather
+	// than re-querying after every issue.
+	cap := int64(d.workspaceMaxParallel)
+	active, err := d.q.CountActiveBenchmarkTasksByWorkspace(ctx, run.WorkspaceID)
+	if err != nil {
+		return fmt.Errorf("count active tasks: %w", err)
+	}
+	if active >= cap {
+		slog.Info("benchmark.task_dispatcher.workspace_cap_hit",
+			"workspace_id", util.UUIDToString(run.WorkspaceID),
+			"run_id", util.UUIDToString(run.ID),
+			"active", active,
+			"cap", d.workspaceMaxParallel,
+		)
+		return nil
+	}
+
 	for _, task := range queued {
+		if active >= cap {
+			slog.Info("benchmark.task_dispatcher.workspace_cap_hit",
+				"workspace_id", util.UUIDToString(run.WorkspaceID),
+				"run_id", util.UUIDToString(run.ID),
+				"active", active,
+				"cap", d.workspaceMaxParallel,
+			)
+			break
+		}
 		if err := d.issueOneTask(ctx, run, profile, composer, task); err != nil {
 			slog.Warn("benchmark.task_dispatcher.task_failed",
 				"run_id", util.UUIDToString(run.ID),
@@ -165,7 +238,11 @@ func (d *TaskDispatcher) dispatchRunTasks(ctx context.Context, run db.BenchmarkR
 				"instance_id", task.InstanceID,
 				"err", err,
 			)
+			// Don't bump active on failure — the task is still 'queued'
+			// and another tick will retry it.
+			continue
 		}
+		active++
 	}
 	return nil
 }
