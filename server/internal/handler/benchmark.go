@@ -61,6 +61,9 @@ const (
 	errRunNotFound             = "run_not_found"
 	errTaskNotFoundForInstance = "task_not_found_for_instance"
 	errDisplayNameRequired     = "display_name_required"
+	errBaseRequired            = "base_required"
+	errSuiteRequired           = "suite_required"
+	errRunNotComplete          = "run_not_complete"
 )
 
 // SuiteResponse is the JSON shape for a benchmark_suite at the handler boundary.
@@ -915,4 +918,77 @@ func (h *BenchmarkHandler) RevokeEvaluatorToken(w http.ResponseWriter, r *http.R
 			append(logger.RequestAttrs(r), "workspace_id", uuidToString(wsUUID), "token_id", uuidToString(idUUID))...)
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// CompareRun handles GET /api/benchmarks/runs/{id}/compare?base=<base-id>.
+//
+// Returns a service-layer ComparisonResult diffing the candidate run (the {id}
+// path param) against the base run (the ?base= query param). Both runs must
+// be complete and in the caller's workspace; otherwise the handler maps the
+// service error to a stable machine code (run_not_found / run_not_complete).
+func (h *BenchmarkHandler) CompareRun(w http.ResponseWriter, r *http.Request) {
+	wsUUID, _, ok := resolveBenchmarkContext(w, r)
+	if !ok {
+		return
+	}
+	candID, ok := parseBenchmarkURLID(w, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	baseStr := r.URL.Query().Get("base")
+	if baseStr == "" {
+		writeError(w, http.StatusBadRequest, errBaseRequired)
+		return
+	}
+	baseID, ok := parseBenchmarkURLID(w, baseStr)
+	if !ok {
+		return
+	}
+
+	out, err := h.deps.Runs.CompareRuns(r.Context(), baseID, candID, wsUUID)
+	switch {
+	case errors.Is(err, benchmark.ErrRunNotFound):
+		writeError(w, http.StatusNotFound, errRunNotFound)
+		return
+	case errors.Is(err, benchmark.ErrRunNotComplete):
+		writeError(w, http.StatusBadRequest, errRunNotComplete)
+		return
+	case err != nil:
+		slog.Warn("benchmark.compare_runs_failed",
+			append(logger.RequestAttrs(r), "err", err, "workspace_id", uuidToString(wsUUID),
+				"base_run_id", uuidToString(baseID), "cand_run_id", uuidToString(candID))...)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// Leaderboard handles GET /api/benchmarks/leaderboard?suite=<suite-slug>.
+//
+// Returns a dense-ranked best-run-per-profile list for the named suite within
+// the caller's workspace. Unknown suite slug → 404 suite_not_found; missing
+// ?suite query param → 400 suite_required.
+func (h *BenchmarkHandler) Leaderboard(w http.ResponseWriter, r *http.Request) {
+	wsUUID, _, ok := resolveBenchmarkContext(w, r)
+	if !ok {
+		return
+	}
+	slug := r.URL.Query().Get("suite")
+	if slug == "" {
+		writeError(w, http.StatusBadRequest, errSuiteRequired)
+		return
+	}
+
+	rows, err := h.deps.Runs.LeaderboardForSuite(r.Context(), wsUUID, slug)
+	switch {
+	case errors.Is(err, benchmark.ErrSuiteResolution):
+		writeError(w, http.StatusNotFound, errSuiteNotFound)
+		return
+	case err != nil:
+		slog.Warn("benchmark.leaderboard_failed",
+			append(logger.RequestAttrs(r), "err", err, "workspace_id", uuidToString(wsUUID), "suite_slug", slug)...)
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": rows})
 }

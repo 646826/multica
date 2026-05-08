@@ -3,11 +3,14 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/service/benchmark"
@@ -1234,5 +1237,429 @@ func TestBenchmarkHandler_RevokeEvaluatorToken_204(t *testing.T) {
 	revokedAt, _ := found["revoked_at"].(string)
 	if revokedAt == "" {
 		t.Fatalf("expected revoked_at to be populated, got %v", found)
+	}
+}
+
+// seedCompareSuite creates a suite (with two instances), an agent, and a
+// profile against it via the handler, then returns (suiteID, profileID) as
+// strings. Used by Compare/Leaderboard handler tests that need a stable
+// 2-instance suite. Cleanup of the suite + downstream rows is registered.
+func seedCompareSuite(t *testing.T, h *BenchmarkHandler, label string) (suiteID, profileID string) {
+	t.Helper()
+	suiteSlug := "cmp-suite-" + label + "-" + uuid.NewString()[:8]
+	cleanupSuiteSlug(t, suiteSlug)
+
+	w := httptest.NewRecorder()
+	h.CreateSuite(w, newRequest("POST", "/api/benchmarks/suites", map[string]any{
+		"slug":         suiteSlug,
+		"display_name": "Compare suite " + label,
+		"adapter_kind": "programbench",
+		"instance_ids": []string{"alpha__one.aaa", "beta__two.bbb"},
+		"description":  "fixture for compare/leaderboard handler test",
+	}))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("seed compare suite: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var suite map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &suite); err != nil {
+		t.Fatalf("decode seeded suite: %v", err)
+	}
+	suiteID, _ = suite["id"].(string)
+	if suiteID == "" {
+		t.Fatalf("seeded compare suite has no id")
+	}
+
+	profileID = seedCompareProfile(t, h, label+"-default")
+	return suiteID, profileID
+}
+
+// seedCompareProfile inserts a fresh agent + captured profile pair scoped to
+// the package-wide test workspace. The slug suffix keeps profiles unique
+// across sibling tests; cleanup is handled by createBenchmarkTestAgent's
+// t.Cleanup hook on the underlying agent row.
+func seedCompareProfile(t *testing.T, h *BenchmarkHandler, slugSuffix string) string {
+	t.Helper()
+	agentID := createBenchmarkTestAgent(t,
+		"Cmp Agent "+slugSuffix+" "+uuid.NewString()[:8],
+		"Compare handler fixture prompt",
+		"gpt-4o-mini",
+	)
+	profileSlug := "cmp-profile-" + slugSuffix + "-" + uuid.NewString()[:8]
+	w := httptest.NewRecorder()
+	h.CaptureProfile(w, newRequest("POST", "/api/benchmarks/profiles", map[string]any{
+		"slug":         profileSlug,
+		"display_name": "Cmp profile " + slugSuffix,
+		"agent_id":     agentID,
+	}))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("seed compare profile: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var profile map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &profile); err != nil {
+		t.Fatalf("decode seeded profile: %v", err)
+	}
+	id, _ := profile["id"].(string)
+	if id == "" {
+		t.Fatalf("seeded compare profile has no id")
+	}
+	return id
+}
+
+// completeRunHandlerSpec mirrors completeRunSpec from the service-package
+// fixtures but is package-local so the handler tests don't depend on
+// benchmark_test internals. Each evalSpec becomes a benchmark_task +
+// benchmark_eval_result pair, and a benchmark_run_summary row is written
+// matching the headline counters.
+type completeRunHandlerSpec struct {
+	DisplayName       string
+	SuiteID           string
+	ProfileID         string
+	Resolved          int32
+	Total             int32
+	Errored           int32
+	AveragePassRate   float64
+	AggregatePassRate float64
+	Evals             []handlerEvalSpec
+}
+
+type handlerEvalSpec struct {
+	InstanceID string
+	Resolved   bool
+	PassRate   float64
+}
+
+// seedCompleteRunHandler starts a run via the handler, seeds the per-instance
+// task + eval_result rows, drives the run to status='complete', and writes
+// the matching run_summary. Returns the run UUID string. Cleanup is the
+// caller's responsibility — typically via cleanupBenchmarkRunsForSuite on
+// the parent suite, which cascades to tasks/eval_results.
+func seedCompleteRunHandler(t *testing.T, h *BenchmarkHandler, spec completeRunHandlerSpec) string {
+	t.Helper()
+	ctx := context.Background()
+
+	w := httptest.NewRecorder()
+	h.StartRun(w, newRequest("POST", "/api/benchmarks/runs", map[string]any{
+		"suite_id":        spec.SuiteID,
+		"profile_id":      spec.ProfileID,
+		"display_name":    spec.DisplayName,
+		"evaluator_mode":  "imported",
+		"adapter_version": "programbench@v1",
+	}))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("seed complete run start: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var seeded map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &seeded); err != nil {
+		t.Fatalf("decode seeded run: %v", err)
+	}
+	runID, _ := seeded["id"].(string)
+	if runID == "" {
+		t.Fatalf("seeded run has no id")
+	}
+	runUUID, err := util.ParseUUID(runID)
+	if err != nil {
+		t.Fatalf("parse run uuid: %v", err)
+	}
+	wsUUID, err := util.ParseUUID(testWorkspaceID)
+	if err != nil {
+		t.Fatalf("parse ws uuid: %v", err)
+	}
+
+	for _, ev := range spec.Evals {
+		task, err := testHandler.Queries.CreateBenchmarkTask(ctx, db.CreateBenchmarkTaskParams{
+			RunID:        runUUID,
+			WorkspaceID:  wsUUID,
+			InstanceID:   ev.InstanceID,
+			InstanceMeta: []byte(`{}`),
+			Status:       "scored",
+		})
+		if err != nil {
+			t.Fatalf("create benchmark_task: %v", err)
+		}
+		var pr pgtype.Numeric
+		if err := pr.Scan(fmt.Sprintf("%.5f", ev.PassRate)); err != nil {
+			t.Fatalf("scan pass_rate: %v", err)
+		}
+		if _, err := testHandler.Queries.UpsertBenchmarkEvalResult(ctx, db.UpsertBenchmarkEvalResultParams{
+			TaskID:           task.ID,
+			WorkspaceID:      wsUUID,
+			Resolved:         ev.Resolved,
+			PassedTests:      0,
+			TotalTests:       1,
+			PassRate:         pr,
+			RawEvalJson:      []byte(`{}`),
+			FailedCategories: []byte(`[]`),
+		}); err != nil {
+			t.Fatalf("upsert eval_result: %v", err)
+		}
+	}
+
+	// Drive the run through 'submitting' → 'complete' so completed_at is
+	// populated; the leaderboard query orders by completed_at DESC.
+	if _, err := testHandler.Queries.UpdateBenchmarkRunStatus(ctx, db.UpdateBenchmarkRunStatusParams{
+		ID:          runUUID,
+		WorkspaceID: wsUUID,
+		Status:      "submitting",
+	}); err != nil {
+		t.Fatalf("update status submitting: %v", err)
+	}
+	if _, err := testHandler.Queries.UpdateBenchmarkRunStatus(ctx, db.UpdateBenchmarkRunStatusParams{
+		ID:          runUUID,
+		WorkspaceID: wsUUID,
+		Status:      "complete",
+	}); err != nil {
+		t.Fatalf("update status complete: %v", err)
+	}
+
+	var agg, avg pgtype.Numeric
+	if err := agg.Scan(fmt.Sprintf("%.5f", spec.AggregatePassRate)); err != nil {
+		t.Fatalf("scan agg: %v", err)
+	}
+	if err := avg.Scan(fmt.Sprintf("%.5f", spec.AveragePassRate)); err != nil {
+		t.Fatalf("scan avg: %v", err)
+	}
+	if _, err := testHandler.Queries.UpsertBenchmarkRunSummary(ctx, db.UpsertBenchmarkRunSummaryParams{
+		RunID:             runUUID,
+		WorkspaceID:       wsUUID,
+		ResolvedCount:     spec.Resolved,
+		TotalCount:        spec.Total,
+		AggregatePassRate: agg,
+		AveragePassRate:   avg,
+		ErroredCount:      spec.Errored,
+		FailureCategories: []byte(`[]`),
+	}); err != nil {
+		t.Fatalf("upsert run_summary: %v", err)
+	}
+	return runID
+}
+
+func TestBenchmarkHandler_CompareRun_200(t *testing.T) {
+	h := newBenchmarkHandler(t)
+	suiteID, baseProfileID := seedCompareSuite(t, h, "cmp200")
+	cleanupBenchmarkRunsForSuite(t, suiteID)
+	candProfileID := seedCompareProfile(t, h, "cmp200-cand")
+
+	baseID := seedCompleteRunHandler(t, h, completeRunHandlerSpec{
+		DisplayName:       "Base",
+		SuiteID:           suiteID,
+		ProfileID:         baseProfileID,
+		Resolved:          0,
+		Total:             2,
+		AveragePassRate:   0.5,
+		AggregatePassRate: 0.5,
+		Evals: []handlerEvalSpec{
+			{InstanceID: "alpha__one.aaa", PassRate: 0.5, Resolved: false},
+			{InstanceID: "beta__two.bbb", PassRate: 0.5, Resolved: false},
+		},
+	})
+	candID := seedCompleteRunHandler(t, h, completeRunHandlerSpec{
+		DisplayName:       "Candidate",
+		SuiteID:           suiteID,
+		ProfileID:         candProfileID,
+		Resolved:          1,
+		Total:             2,
+		AveragePassRate:   0.75,
+		AggregatePassRate: 0.75,
+		Evals: []handlerEvalSpec{
+			{InstanceID: "alpha__one.aaa", PassRate: 1.0, Resolved: true},
+			{InstanceID: "beta__two.bbb", PassRate: 0.5, Resolved: false},
+		},
+	})
+
+	w := httptest.NewRecorder()
+	req := withURLParam(
+		newRequest("GET", "/api/benchmarks/runs/"+candID+"/compare", nil),
+		"id", candID,
+	)
+	// httptest's NewRequest strips query strings unless we set RawQuery
+	// directly; the handler reads ?base= via r.URL.Query().
+	req.URL.RawQuery = "base=" + baseID
+	h.CompareRun(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var got benchmark.ComparisonResult
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.BaseRunID != baseID {
+		t.Fatalf("base_run_id mismatch: got %s, want %s", got.BaseRunID, baseID)
+	}
+	if got.CandRunID != candID {
+		t.Fatalf("cand_run_id mismatch: got %s, want %s", got.CandRunID, candID)
+	}
+	if got.Delta.Resolved != 1 {
+		t.Fatalf("delta.resolved: got %d, want 1", got.Delta.Resolved)
+	}
+}
+
+func TestBenchmarkHandler_CompareRun_400_OnMissingBase(t *testing.T) {
+	h := newBenchmarkHandler(t)
+	candID := uuid.NewString()
+	w := httptest.NewRecorder()
+	req := withURLParam(newRequest("GET", "/api/benchmarks/runs/"+candID+"/compare", nil), "id", candID)
+	h.CompareRun(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode 400: %v", err)
+	}
+	if got["error"] != "base_required" {
+		t.Fatalf("expected error=base_required, got %v", got["error"])
+	}
+}
+
+func TestBenchmarkHandler_CompareRun_404_OnUnknownRun(t *testing.T) {
+	h := newBenchmarkHandler(t)
+	suiteID, profileID := seedCompareSuite(t, h, "cmp404")
+	cleanupBenchmarkRunsForSuite(t, suiteID)
+
+	// Real complete run as base; candidate is a bogus UUID so the service
+	// returns ErrRunNotFound and the handler maps to 404.
+	baseID := seedCompleteRunHandler(t, h, completeRunHandlerSpec{
+		DisplayName:       "Base for 404",
+		SuiteID:           suiteID,
+		ProfileID:         profileID,
+		Resolved:          1,
+		Total:             1,
+		AveragePassRate:   1.0,
+		AggregatePassRate: 1.0,
+		Evals: []handlerEvalSpec{
+			{InstanceID: "alpha__one.aaa", PassRate: 1.0, Resolved: true},
+		},
+	})
+	bogusCand := uuid.NewString()
+
+	w := httptest.NewRecorder()
+	req := withURLParam(
+		newRequest("GET", "/api/benchmarks/runs/"+bogusCand+"/compare", nil),
+		"id", bogusCand,
+	)
+	req.URL.RawQuery = "base=" + baseID
+	h.CompareRun(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode 404: %v", err)
+	}
+	if got["error"] != "run_not_found" {
+		t.Fatalf("expected error=run_not_found, got %v", got["error"])
+	}
+}
+
+func TestBenchmarkHandler_Leaderboard_200(t *testing.T) {
+	h := newBenchmarkHandler(t)
+	suiteID, profA := seedCompareSuite(t, h, "lb200")
+	cleanupBenchmarkRunsForSuite(t, suiteID)
+	profB := seedCompareProfile(t, h, "lb200-b")
+
+	// Fetch the suite slug — the helper only returns the UUID, but the
+	// Leaderboard endpoint takes ?suite=<slug>.
+	wGet := httptest.NewRecorder()
+	getReq := withURLParam(newRequest("GET", "/api/benchmarks/suites/"+suiteID, nil), "id", suiteID)
+	h.GetSuite(wGet, getReq)
+	if wGet.Code != http.StatusOK {
+		t.Fatalf("get suite: %d %s", wGet.Code, wGet.Body.String())
+	}
+	var suiteRow map[string]any
+	if err := json.Unmarshal(wGet.Body.Bytes(), &suiteRow); err != nil {
+		t.Fatalf("decode suite: %v", err)
+	}
+	suiteSlug, _ := suiteRow["slug"].(string)
+	if suiteSlug == "" {
+		t.Fatalf("suite slug empty")
+	}
+
+	_ = seedCompleteRunHandler(t, h, completeRunHandlerSpec{
+		DisplayName:       "A best",
+		SuiteID:           suiteID,
+		ProfileID:         profA,
+		Resolved:          2,
+		Total:             2,
+		AveragePassRate:   1.0,
+		AggregatePassRate: 1.0,
+		Evals: []handlerEvalSpec{
+			{InstanceID: "alpha__one.aaa", PassRate: 1.0, Resolved: true},
+			{InstanceID: "beta__two.bbb", PassRate: 1.0, Resolved: true},
+		},
+	})
+	// Sleep so completed_at differs across runs; the leaderboard ORDER BY
+	// uses completed_at DESC and the tiebreaker fires on identical
+	// millisecond timestamps.
+	time.Sleep(1100 * time.Millisecond)
+	_ = seedCompleteRunHandler(t, h, completeRunHandlerSpec{
+		DisplayName:       "B only",
+		SuiteID:           suiteID,
+		ProfileID:         profB,
+		Resolved:          1,
+		Total:             2,
+		AveragePassRate:   0.5,
+		AggregatePassRate: 0.5,
+		Evals: []handlerEvalSpec{
+			{InstanceID: "alpha__one.aaa", PassRate: 1.0, Resolved: true},
+			{InstanceID: "beta__two.bbb", PassRate: 0.0, Resolved: false},
+		},
+	})
+
+	w := httptest.NewRecorder()
+	req := newRequest("GET", "/api/benchmarks/leaderboard", nil)
+	req.URL.RawQuery = "suite=" + suiteSlug
+	h.Leaderboard(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var got struct {
+		Items []benchmark.LeaderboardRow `json:"items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode 200: %v", err)
+	}
+	if len(got.Items) != 2 {
+		t.Fatalf("expected 2 leaderboard rows, got %d: %v", len(got.Items), got.Items)
+	}
+	if got.Items[0].Rank != 1 || got.Items[1].Rank != 2 {
+		t.Fatalf("ranks: got %d/%d, want 1/2", got.Items[0].Rank, got.Items[1].Rank)
+	}
+	if got.Items[0].ResolvedCount != 2 {
+		t.Fatalf("rank-1 resolved_count: got %d, want 2", got.Items[0].ResolvedCount)
+	}
+}
+
+func TestBenchmarkHandler_Leaderboard_404_OnUnknownSuite(t *testing.T) {
+	h := newBenchmarkHandler(t)
+	w := httptest.NewRecorder()
+	req := newRequest("GET", "/api/benchmarks/leaderboard", nil)
+	req.URL.RawQuery = "suite=bogus-no-such-" + uuid.NewString()[:8]
+	h.Leaderboard(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode 404: %v", err)
+	}
+	if got["error"] != "suite_not_found" {
+		t.Fatalf("expected error=suite_not_found, got %v", got["error"])
+	}
+}
+
+func TestBenchmarkHandler_Leaderboard_400_OnMissingSuite(t *testing.T) {
+	h := newBenchmarkHandler(t)
+	w := httptest.NewRecorder()
+	req := newRequest("GET", "/api/benchmarks/leaderboard", nil)
+	h.Leaderboard(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode 400: %v", err)
+	}
+	if got["error"] != "suite_required" {
+		t.Fatalf("expected error=suite_required, got %v", got["error"])
 	}
 }
