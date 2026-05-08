@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/util/pgerr"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -125,8 +125,7 @@ func (s *ProfileService) Capture(ctx context.Context, in CaptureProfileInput) (P
 		CapturedBy:     in.CapturedBy,
 	})
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if pgerr.IsUniqueViolation(err) {
 			return Profile{}, ErrProfileSlugTaken
 		}
 		return Profile{}, err

@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/internal/util/pgerr"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -287,7 +288,7 @@ func (h *Handler) CreateSkill(w http.ResponseWriter, r *http.Request) {
 		Files:       req.Files,
 	})
 	if err != nil {
-		if isUniqueViolation(err) {
+		if pgerr.IsUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "a skill with this name already exists")
 			return
 		}
@@ -367,7 +368,7 @@ func (h *Handler) UpdateSkill(w http.ResponseWriter, r *http.Request) {
 
 	skill, err = qtx.UpdateSkill(r.Context(), params)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if pgerr.IsUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "a skill with this name already exists")
 			return
 		}
@@ -1604,7 +1605,7 @@ func (h *Handler) ImportSkill(w http.ResponseWriter, r *http.Request) {
 		Files:       files,
 	})
 	if err != nil {
-		if isUniqueViolation(err) {
+		if pgerr.IsUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "a skill with this name already exists")
 			return
 		}

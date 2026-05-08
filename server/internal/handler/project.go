@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/internal/util/pgerr"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -299,7 +300,7 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 			CreatedBy:    creator,
 		})
 		if err != nil {
-			if isUniqueViolation(err) {
+			if pgerr.IsUniqueViolation(err) {
 				writeError(w, http.StatusConflict, "resources["+strconv.Itoa(i)+"]: this resource is already attached")
 				return
 			}

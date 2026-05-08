@@ -8,11 +8,11 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/service/benchmark/adapter"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/internal/util/pgerr"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -91,8 +91,7 @@ func (s *SuiteService) Create(ctx context.Context, in CreateSuiteInput) (Suite, 
 		CreatedBy:   in.CreatedBy,
 	})
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if pgerr.IsUniqueViolation(err) {
 			return Suite{}, ErrSuiteSlugTaken
 		}
 		return Suite{}, err
@@ -306,8 +305,7 @@ func (s *SuiteService) CreateReplaySuite(ctx context.Context, in CreateReplaySui
 		CreatedBy:             in.CreatedBy,
 	})
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if pgerr.IsUniqueViolation(err) {
 			return Suite{}, ErrSuiteSlugTaken
 		}
 		return Suite{}, err

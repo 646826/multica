@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/util/pgerr"
 	"github.com/multica-ai/multica/server/internal/logger"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -166,7 +167,7 @@ func (h *Handler) CreateLabel(w http.ResponseWriter, r *http.Request) {
 		Color:       color,
 	})
 	if err != nil {
-		if isUniqueViolation(err) {
+		if pgerr.IsUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "a label with that name already exists")
 			return
 		}
@@ -232,7 +233,7 @@ func (h *Handler) UpdateLabel(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "label not found")
 			return
 		}
-		if isUniqueViolation(err) {
+		if pgerr.IsUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "a label with that name already exists")
 			return
 		}

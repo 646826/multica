@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/util/pgerr"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/logger"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -131,7 +132,7 @@ func (h *Handler) CreateInvitation(w http.ResponseWriter, r *http.Request) {
 		Role:          role,
 	})
 	if err != nil {
-		if isUniqueViolation(err) {
+		if pgerr.IsUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "invitation already pending for this email")
 			return
 		}
@@ -418,7 +419,7 @@ func (h *Handler) AcceptInvitation(w http.ResponseWriter, r *http.Request) {
 		Role:        accepted.Role,
 	})
 	if err != nil {
-		if isUniqueViolation(err) {
+		if pgerr.IsUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "you are already a member of this workspace")
 			return
 		}

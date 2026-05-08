@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/util/pgerr"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/logger"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -183,7 +184,7 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		IssuePrefix: issuePrefix,
 	})
 	if err != nil {
-		if isUniqueViolation(err) {
+		if pgerr.IsUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "workspace slug already exists")
 			return
 		}
@@ -439,7 +440,7 @@ func (h *Handler) CreateMember(w http.ResponseWriter, r *http.Request) {
 		Role:        role,
 	})
 	if err != nil {
-		if isUniqueViolation(err) {
+		if pgerr.IsUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "user is already a member")
 			return
 		}

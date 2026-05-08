@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/internal/util/pgerr"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -682,7 +683,7 @@ func (h *Handler) ReportLocalSkillImportResult(w http.ResponseWriter, r *http.Re
 	})
 	if err != nil {
 		failMsg := err.Error()
-		if isUniqueViolation(err) {
+		if pgerr.IsUniqueViolation(err) {
 			failMsg = "a skill with this name already exists"
 		}
 		if ferr := h.LocalSkillImportStore.Fail(r.Context(), requestID, failMsg); ferr != nil {

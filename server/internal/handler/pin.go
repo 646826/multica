@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/internal/util/pgerr"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -138,7 +139,7 @@ func (h *Handler) CreatePin(w http.ResponseWriter, r *http.Request) {
 		Position:    maxPos + 1,
 	})
 	if err != nil {
-		if isUniqueViolation(err) {
+		if pgerr.IsUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "item already pinned")
 			return
 		}

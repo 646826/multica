@@ -214,11 +214,6 @@ func isNotFound(err error) bool {
 	return errors.Is(err, pgx.ErrNoRows)
 }
 
-func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505"
-}
-
 func requestUserID(r *http.Request) string {
 	return r.Header.Get("X-User-ID")
 }
