@@ -127,6 +127,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	benchmarkRegistry.RegisterCatalog(benchmarkadapter.NewProgramBenchCatalog())
 	benchmarkRegistry.RegisterComposer(benchmarkadapter.NewProgramBenchComposer())
 	benchmarkRegistry.RegisterParser(benchmarkadapter.NewProgramBenchParser())
+	benchmarkRegistry.RegisterCatalog(benchmarkadapter.NewReplayCatalog())
+	benchmarkRegistry.RegisterComposer(benchmarkadapter.NewReplayComposer())
+	benchmarkRegistry.RegisterParser(benchmarkadapter.NewReplayParser())
+	benchmarkRegistry.RegisterEvaluator(benchmarkadapter.NewReplayEvaluator())
 
 	benchmarkSuites := benchmarkservice.NewSuiteService(queries)
 	benchmarkProfiles := benchmarkservice.NewProfileService(queries)
