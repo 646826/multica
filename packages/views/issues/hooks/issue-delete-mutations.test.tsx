@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  QueryClient,
+  QueryClientProvider,
+  QueryObserver,
+} from "@tanstack/react-query";
 import { setApiInstance } from "@multica/core/api";
 import { agentTaskSnapshotKeys, agentTasksKeys } from "@multica/core/agents/queries";
 import { useBatchDeleteIssues, useDeleteIssue } from "@multica/core/issues/mutations";
@@ -452,16 +456,35 @@ describe("useBatchDeleteIssues", () => {
     expectInvalidated(qc, issueKeys.childProgress(WS_ID));
   });
 
-  it("keeps requested issue caches on partial batch delete and broadly invalidates issue and dependent caches", async () => {
+  it("restores optimistic list snapshots on partial batch delete before invalidating caches", async () => {
     const batchDeleteIssues = vi.fn().mockResolvedValue({ deleted: 1 });
     const { qc, wrapper } = setup(undefined, batchDeleteIssues);
+    const assignedFilter = { assignee_id: AGENT_ID };
+    const createdFilter = { creator_id: "member-1" };
     const idsToDelete = [ISSUE_ID, OTHER_ISSUE_ID];
+    const childIssue = { ...otherIssue, parent_issue_id: PARENT_ISSUE_ID };
+    const list = makeListCache(baseIssue, childIssue);
+    const assignedMyList = makeListCache(baseIssue, childIssue);
+    const createdMyList = makeListCache(baseIssue);
+    const children = [baseIssue, childIssue];
     qc.setQueryData<ListIssuesCache>(
       issueKeys.list(WS_ID),
-      makeListCache(baseIssue, otherIssue),
+      list,
+    );
+    qc.setQueryData<ListIssuesCache>(
+      issueKeys.myList(WS_ID, "assigned", assignedFilter),
+      assignedMyList,
+    );
+    qc.setQueryData<ListIssuesCache>(
+      issueKeys.myList(WS_ID, "created", createdFilter),
+      createdMyList,
+    );
+    qc.setQueryData<Issue[]>(
+      issueKeys.children(WS_ID, PARENT_ISSUE_ID),
+      children,
     );
     qc.setQueryData<Issue>(issueKeys.detail(WS_ID, ISSUE_ID), baseIssue);
-    qc.setQueryData<Issue>(issueKeys.detail(WS_ID, OTHER_ISSUE_ID), otherIssue);
+    qc.setQueryData<Issue>(issueKeys.detail(WS_ID, OTHER_ISSUE_ID), childIssue);
     qc.setQueryData<IssueUsageSummary>(issueKeys.usage(ISSUE_ID), usage);
     qc.setQueryData<Attachment[]>(issueKeys.attachments(ISSUE_ID), [
       attachment,
@@ -491,51 +514,73 @@ describe("useBatchDeleteIssues", () => {
     qc.setQueryData<AgentTask[]>(agentTasksKeys.detail(WS_ID, AGENT_ID), [
       makeTask(),
     ]);
+    const listRefetch = deferred<ListIssuesCache>();
+    const listObserver = new QueryObserver(qc, {
+      queryKey: issueKeys.list(WS_ID),
+      queryFn: () => listRefetch.promise,
+      refetchOnMount: false,
+      staleTime: Infinity,
+    });
+    const unsubscribeList = listObserver.subscribe(() => {});
 
     const { result } = renderHook(() => useBatchDeleteIssues(), { wrapper });
 
-    await act(async () => {
-      await result.current.mutateAsync(idsToDelete);
-    });
+    try {
+      await act(async () => {
+        await result.current.mutateAsync(idsToDelete);
+      });
 
-    expect(batchDeleteIssues).toHaveBeenCalledWith(idsToDelete);
-    expect(ids(qc.getQueryData(issueKeys.list(WS_ID)))).toEqual([]);
-    expect(qc.getQueryData(issueKeys.detail(WS_ID, ISSUE_ID))).toEqual(
-      baseIssue,
-    );
-    expect(qc.getQueryData(issueKeys.detail(WS_ID, OTHER_ISSUE_ID))).toEqual(
-      otherIssue,
-    );
-    expect(qc.getQueryData(issueKeys.usage(ISSUE_ID))).toEqual(usage);
-    expect(qc.getQueryData(issueKeys.attachments(ISSUE_ID))).toEqual([
-      attachment,
-    ]);
-    expect(qc.getQueryData(issueKeys.timeline(ISSUE_ID))).toEqual(timeline);
-    expect(qc.getQueryData(labelKeys.byIssue(WS_ID, ISSUE_ID))).toEqual(
-      issueLabels,
-    );
-    expect(qc.getQueryData(issueKeys.usage(OTHER_ISSUE_ID))).toEqual(usage);
-    expect(qc.getQueryData(issueKeys.attachments(OTHER_ISSUE_ID))).toEqual([
-      { ...attachment, id: "attachment-2", issue_id: OTHER_ISSUE_ID },
-    ]);
-    expect(qc.getQueryData(issueKeys.timeline(OTHER_ISSUE_ID))).toEqual([
-      { ...timeline[0]!, id: "activity-2" },
-    ]);
-    expect(qc.getQueryData(labelKeys.byIssue(WS_ID, OTHER_ISSUE_ID))).toEqual(
-      issueLabels,
-    );
-    expectInvalidated(qc, issueKeys.detail(WS_ID, ISSUE_ID));
-    expectInvalidated(qc, issueKeys.detail(WS_ID, OTHER_ISSUE_ID));
-    expectInvalidated(qc, issueKeys.usage(ISSUE_ID));
-    expectInvalidated(qc, issueKeys.attachments(ISSUE_ID));
-    expectInvalidated(qc, issueKeys.timeline(ISSUE_ID));
-    expectInvalidated(qc, labelKeys.byIssue(WS_ID, ISSUE_ID));
-    expectInvalidated(qc, issueKeys.usage(OTHER_ISSUE_ID));
-    expectInvalidated(qc, issueKeys.attachments(OTHER_ISSUE_ID));
-    expectInvalidated(qc, issueKeys.timeline(OTHER_ISSUE_ID));
-    expectInvalidated(qc, labelKeys.byIssue(WS_ID, OTHER_ISSUE_ID));
-    expectInvalidated(qc, agentTaskSnapshotKeys.list(WS_ID));
-    expectInvalidated(qc, agentTasksKeys.detail(WS_ID, AGENT_ID));
+      expect(batchDeleteIssues).toHaveBeenCalledWith(idsToDelete);
+      expect(qc.getQueryData(issueKeys.list(WS_ID))).toEqual(list);
+      expect(
+        qc.getQueryData(issueKeys.myList(WS_ID, "assigned", assignedFilter)),
+      ).toEqual(assignedMyList);
+      expect(
+        qc.getQueryData(issueKeys.myList(WS_ID, "created", createdFilter)),
+      ).toEqual(createdMyList);
+      expect(
+        qc.getQueryData(issueKeys.children(WS_ID, PARENT_ISSUE_ID)),
+      ).toEqual(children);
+      expect(qc.getQueryData(issueKeys.detail(WS_ID, ISSUE_ID))).toEqual(
+        baseIssue,
+      );
+      expect(qc.getQueryData(issueKeys.detail(WS_ID, OTHER_ISSUE_ID))).toEqual(
+        childIssue,
+      );
+      expect(qc.getQueryData(issueKeys.usage(ISSUE_ID))).toEqual(usage);
+      expect(qc.getQueryData(issueKeys.attachments(ISSUE_ID))).toEqual([
+        attachment,
+      ]);
+      expect(qc.getQueryData(issueKeys.timeline(ISSUE_ID))).toEqual(timeline);
+      expect(qc.getQueryData(labelKeys.byIssue(WS_ID, ISSUE_ID))).toEqual(
+        issueLabels,
+      );
+      expect(qc.getQueryData(issueKeys.usage(OTHER_ISSUE_ID))).toEqual(usage);
+      expect(qc.getQueryData(issueKeys.attachments(OTHER_ISSUE_ID))).toEqual([
+        { ...attachment, id: "attachment-2", issue_id: OTHER_ISSUE_ID },
+      ]);
+      expect(qc.getQueryData(issueKeys.timeline(OTHER_ISSUE_ID))).toEqual([
+        { ...timeline[0]!, id: "activity-2" },
+      ]);
+      expect(qc.getQueryData(labelKeys.byIssue(WS_ID, OTHER_ISSUE_ID))).toEqual(
+        issueLabels,
+      );
+      expectInvalidated(qc, issueKeys.detail(WS_ID, ISSUE_ID));
+      expectInvalidated(qc, issueKeys.detail(WS_ID, OTHER_ISSUE_ID));
+      expectInvalidated(qc, issueKeys.usage(ISSUE_ID));
+      expectInvalidated(qc, issueKeys.attachments(ISSUE_ID));
+      expectInvalidated(qc, issueKeys.timeline(ISSUE_ID));
+      expectInvalidated(qc, labelKeys.byIssue(WS_ID, ISSUE_ID));
+      expectInvalidated(qc, issueKeys.usage(OTHER_ISSUE_ID));
+      expectInvalidated(qc, issueKeys.attachments(OTHER_ISSUE_ID));
+      expectInvalidated(qc, issueKeys.timeline(OTHER_ISSUE_ID));
+      expectInvalidated(qc, labelKeys.byIssue(WS_ID, OTHER_ISSUE_ID));
+      expectInvalidated(qc, agentTaskSnapshotKeys.list(WS_ID));
+      expectInvalidated(qc, agentTasksKeys.detail(WS_ID, AGENT_ID));
+    } finally {
+      unsubscribeList();
+      listRefetch.resolve(list);
+    }
   });
 
   it("restores optimistic workspace, my-list, and parent children snapshots when a batch delete fails", async () => {

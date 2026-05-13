@@ -412,6 +412,17 @@ export function useBatchDeleteIssues() {
         return;
       }
 
+      if (ctx?.prevList) qc.setQueryData(issueKeys.list(wsId), ctx.prevList);
+      if (ctx?.prevMyLists) {
+        for (const [key, snapshot] of ctx.prevMyLists) {
+          qc.setQueryData(key, snapshot);
+        }
+      }
+      if (ctx?.prevChildren) {
+        for (const [parentId, snapshot] of ctx.prevChildren) {
+          qc.setQueryData(issueKeys.children(wsId, parentId), snapshot);
+        }
+      }
       for (const id of ids) {
         invalidateIssueScopedCaches(qc, wsId, id);
       }
