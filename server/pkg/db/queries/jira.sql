@@ -289,3 +289,23 @@ WHERE jl.connection_id = $1
   AND i.updated_at > $2
 ORDER BY i.updated_at ASC
 LIMIT $3;
+
+-- name: ListUnlinkedLocalIssues :many
+-- Outbound issue creation (Story 4.4): workspace issues with no link row yet,
+-- eligible for Multica→Jira creation. origin gate excludes nothing here; the
+-- caller enforces create_to_jira + a marker-based dedup.
+SELECT i.* FROM issue i
+WHERE i.workspace_id = $1
+  AND NOT EXISTS (SELECT 1 FROM jira_link jl WHERE jl.issue_id = i.id)
+  AND i.status <> 'cancelled'
+  AND i.created_at > $2
+ORDER BY i.created_at ASC
+LIMIT $3;
+
+-- name: FinalizeJiraLinkCreate :exec
+-- Outbound create finalize (AD-15): bind the real Jira id AND the Multica
+-- issue id, mark seen so the orphan sweep never flags a just-created pair.
+UPDATE jira_link
+SET state = 'ok', jira_issue_id = $2, issue_id = $3, jira_key = $4, items = $5,
+    last_seen_at = now(), updated_at = now()
+WHERE id = $1;

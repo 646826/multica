@@ -321,6 +321,10 @@ func (w *Worker) cycleBody(ctx context.Context, conn db.JiraConnection, cycleID 
 		w.updateIssue(ctx, conn, sm, fieldRows, link, nil, cycleID)
 	}
 
+	if err := w.syncOutboundCreates(ctx, conn, cycleID); err != nil {
+		return client.Requests(), err
+	}
+
 	if err := w.syncOutboundComments(ctx, conn, cycleID); err != nil {
 		return client.Requests(), err
 	}

@@ -47,8 +47,11 @@ const (
 	// Outbound status (FR-17) with recovery pairing.
 	JournalTransitionUnreachable JournalKind = "transition_unreachable"
 	JournalTransitionRecovered   JournalKind = "transition_recovered"
-	JournalScopeResumed          JournalKind = "scope_resumed"
-	JournalLinkOrphaned          JournalKind = "link_orphaned"
+	// Outbound creation (FR-9, AD-15).
+	JournalOutboundCreated JournalKind = "outbound_created"
+	JournalCreateRejected  JournalKind = "create_rejected"
+	JournalScopeResumed    JournalKind = "scope_resumed"
+	JournalLinkOrphaned    JournalKind = "link_orphaned"
 )
 
 // journalKinds is the registry; Record refuses kinds outside it.
@@ -68,6 +71,8 @@ var journalKinds = map[JournalKind]bool{
 	JournalCommentAdopted:           true,
 	JournalTransitionUnreachable:    true,
 	JournalTransitionRecovered:      true,
+	JournalOutboundCreated:          true,
+	JournalCreateRejected:           true,
 	JournalScopeResumed:             true,
 	JournalLinkOrphaned:             true,
 }

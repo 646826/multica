@@ -622,3 +622,29 @@ func (c *Client) UpdateIssueFields(ctx context.Context, issueID string, fields m
 	}
 	return c.do(ctx, http.MethodPut, "/rest/api/3/issue/"+url.PathEscape(issueID), nil, map[string]any{"fields": fields}, nil)
 }
+
+// CreatedIssue is the response of a Jira issue create.
+type CreatedIssue struct {
+	ID  string `json:"id"`
+	Key string `json:"key"`
+}
+
+// CreateIssue creates a Jira issue in the project with the given type and
+// fields (summary/description already shaped by the caller). Required-field
+// rejections surface as a permanent APIError (400) the caller journals.
+func (c *Client) CreateIssue(ctx context.Context, projectKey, issueType string, fields map[string]any) (CreatedIssue, error) {
+	body := map[string]any{"fields": mergeFields(map[string]any{
+		"project":   map[string]string{"key": projectKey},
+		"issuetype": map[string]string{"name": issueType},
+	}, fields)}
+	var out CreatedIssue
+	err := c.do(ctx, http.MethodPost, "/rest/api/3/issue", nil, body, &out)
+	return out, err
+}
+
+func mergeFields(base, extra map[string]any) map[string]any {
+	for k, v := range extra {
+		base[k] = v
+	}
+	return base
+}

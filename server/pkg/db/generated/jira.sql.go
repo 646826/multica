@@ -388,6 +388,34 @@ func (q *Queries) FinalizeJiraLink(ctx context.Context, arg FinalizeJiraLinkPara
 	return err
 }
 
+const finalizeJiraLinkCreate = `-- name: FinalizeJiraLinkCreate :exec
+UPDATE jira_link
+SET state = 'ok', jira_issue_id = $2, issue_id = $3, jira_key = $4, items = $5,
+    last_seen_at = now(), updated_at = now()
+WHERE id = $1
+`
+
+type FinalizeJiraLinkCreateParams struct {
+	ID          pgtype.UUID `json:"id"`
+	JiraIssueID string      `json:"jira_issue_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	JiraKey     string      `json:"jira_key"`
+	Items       []byte      `json:"items"`
+}
+
+// Outbound create finalize (AD-15): bind the real Jira id AND the Multica
+// issue id, mark seen so the orphan sweep never flags a just-created pair.
+func (q *Queries) FinalizeJiraLinkCreate(ctx context.Context, arg FinalizeJiraLinkCreateParams) error {
+	_, err := q.db.Exec(ctx, finalizeJiraLinkCreate,
+		arg.ID,
+		arg.JiraIssueID,
+		arg.IssueID,
+		arg.JiraKey,
+		arg.Items,
+	)
+	return err
+}
+
 const finalizeJiraLinkInbound = `-- name: FinalizeJiraLinkInbound :exec
 UPDATE jira_link
 SET state = 'ok', issue_id = $2, jira_key = $3, items = $4, last_seen_at = now(), updated_at = now()
@@ -1040,6 +1068,72 @@ func (q *Queries) ListLocallyChangedLinkedIssues(ctx context.Context, arg ListLo
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.IssueUpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUnlinkedLocalIssues = `-- name: ListUnlinkedLocalIssues :many
+SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties FROM issue i
+WHERE i.workspace_id = $1
+  AND NOT EXISTS (SELECT 1 FROM jira_link jl WHERE jl.issue_id = i.id)
+  AND i.status <> 'cancelled'
+  AND i.created_at > $2
+ORDER BY i.created_at ASC
+LIMIT $3
+`
+
+type ListUnlinkedLocalIssuesParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	Limit       int32              `json:"limit"`
+}
+
+// Outbound issue creation (Story 4.4): workspace issues with no link row yet,
+// eligible for Multica→Jira creation. origin gate excludes nothing here; the
+// caller enforces create_to_jira + a marker-based dedup.
+func (q *Queries) ListUnlinkedLocalIssues(ctx context.Context, arg ListUnlinkedLocalIssuesParams) ([]Issue, error) {
+	rows, err := q.db.Query(ctx, listUnlinkedLocalIssues, arg.WorkspaceID, arg.CreatedAt, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Issue{}
+	for rows.Next() {
+		var i Issue
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Title,
+			&i.Description,
+			&i.Status,
+			&i.Priority,
+			&i.AssigneeType,
+			&i.AssigneeID,
+			&i.CreatorType,
+			&i.CreatorID,
+			&i.ParentIssueID,
+			&i.AcceptanceCriteria,
+			&i.ContextRefs,
+			&i.Position,
+			&i.DueDate,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Number,
+			&i.ProjectID,
+			&i.OriginType,
+			&i.OriginID,
+			&i.FirstExecutedAt,
+			&i.StartDate,
+			&i.Metadata,
+			&i.Stage,
+			&i.Properties,
 		); err != nil {
 			return nil, err
 		}
