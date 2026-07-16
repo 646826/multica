@@ -27,6 +27,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	composiointeg "github.com/multica-ai/multica/server/internal/integrations/composio"
+	jirainteg "github.com/multica-ai/multica/server/internal/integrations/jira"
 	"github.com/multica-ai/multica/server/internal/integrations/lark"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
@@ -282,6 +283,21 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// continues to start so self-host deployments that have not opted
 	// in to Lark are unaffected. Feishu registers its Factory + ResolverSet
 	// into the channel engine above.
+	// Jira integration (native sync). The service is always constructed so
+	// the read endpoint can report configured:false; the box stays nil (and
+	// write endpoints return 503) until MULTICA_JIRA_SECRET_KEY is set.
+	if jiraKey, err := secretbox.LoadKey(jirainteg.KeyEnv); err == nil {
+		if jiraBox, err := secretbox.New(jiraKey); err != nil {
+			slog.Error("jira: secretbox.New failed; jira integration disabled", "error", err)
+			h.Jira = jirainteg.NewService(queries, nil)
+		} else {
+			h.Jira = jirainteg.NewService(queries, jiraBox)
+			slog.Info("jira integration enabled")
+		}
+	} else {
+		h.Jira = jirainteg.NewService(queries, nil)
+	}
+
 	if larkKey, err := secretbox.LoadKey("MULTICA_LARK_SECRET_KEY"); err == nil {
 		box, err := secretbox.New(larkKey)
 		if err != nil {
@@ -867,6 +883,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// the handler strips the management handle and adds a
 					// can_manage hint so the UI can gate connect/disconnect.
 					r.Get("/github/installations", h.ListGitHubInstallations)
+				// Jira connection state is member-visible for the same
+				// reason; management stays admin-only below.
+				r.Get("/jira", h.GetJiraConnection)
 					// Custom runtime profiles — listing/reading is member-visible
 					// (the Runtime page renders for everyone; create/edit/delete
 					// are admin-gated below).
@@ -900,6 +919,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Get("/github/connect", h.GitHubConnect)
 					r.Delete("/github/installations/{installationId}", h.DeleteGitHubInstallation)
+					// Jira connection management (native sync).
+					r.Post("/jira/connect", h.ConnectJira)
+					r.Patch("/jira", h.PatchJiraConnection)
+					r.Delete("/jira", h.DeleteJiraConnection)
+					r.Post("/jira/projects", h.ListJiraProjects)
 				})
 
 				// Lark integration. Every endpoint here only requires

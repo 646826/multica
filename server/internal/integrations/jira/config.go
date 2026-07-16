@@ -354,6 +354,32 @@ func (s *Service) Connect(ctx context.Context, in ConnectInput) (db.JiraConnecti
 	return conn, nil
 }
 
+// RotateToken live-validates replacement credentials and persists them
+// encrypted; the Connection's other settings are untouched.
+func (s *Service) RotateToken(ctx context.Context, conn db.JiraConnection, email, token string) error {
+	if !s.Configured() {
+		return ErrNotConfigured
+	}
+	client, err := s.NewClient(conn.SiteUrl, email, token)
+	if err != nil {
+		return err
+	}
+	if _, err := client.Myself(ctx); err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.IsAuth() {
+			return fmt.Errorf("credential validation failed: token invalid or expired: %w", err)
+		}
+		return fmt.Errorf("credential validation failed: %w", err)
+	}
+	encrypted, err := s.Box.Seal([]byte(token))
+	if err != nil {
+		return fmt.Errorf("encrypt token: %w", err)
+	}
+	return s.Q.UpdateJiraConnectionToken(ctx, db.UpdateJiraConnectionTokenParams{
+		ID: conn.ID, Email: email, TokenEncrypted: encrypted,
+	})
+}
+
 // ClientFor decrypts the Connection's token and builds its API client.
 func (s *Service) ClientFor(conn db.JiraConnection) (*Client, error) {
 	if !s.Configured() {

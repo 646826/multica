@@ -121,3 +121,8 @@ WHERE id IN (
     ORDER BY j2.created_at DESC, j2.id DESC
     OFFSET $2
 );
+
+-- name: DeleteJiraJournalByConnection :execrows
+-- Connection-delete cleanup (application-code cascade, AD-3).
+DELETE FROM jira_journal
+WHERE connection_id = $1;

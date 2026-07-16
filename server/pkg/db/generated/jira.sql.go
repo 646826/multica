@@ -161,6 +161,20 @@ func (q *Queries) DeleteJiraConnection(ctx context.Context, id pgtype.UUID) erro
 	return err
 }
 
+const deleteJiraJournalByConnection = `-- name: DeleteJiraJournalByConnection :execrows
+DELETE FROM jira_journal
+WHERE connection_id = $1
+`
+
+// Connection-delete cleanup (application-code cascade, AD-3).
+func (q *Queries) DeleteJiraJournalByConnection(ctx context.Context, connectionID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteJiraJournalByConnection, connectionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getJiraConnectionByID = `-- name: GetJiraConnectionByID :one
 SELECT id, workspace_id, site_url, site_host, project_key, project_id, email, token_encrypted, connected_by_id, enabled, mode, leading_system, comments_enabled, labels_enabled, custom_fields_enabled, create_from_jira, create_to_jira, jql_filter, label_prefix, mention_bridge_enabled, outbound_issue_type, status_map, field_map, tag_rules, cycle_interval_seconds, jira_cursor, local_cursor, health, created_at, updated_at FROM jira_connection
 WHERE id = $1
