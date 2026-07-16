@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/events"
@@ -219,5 +222,252 @@ func TestImportAdoptsByMarkerAfterInterruptedImport(t *testing.T) {
 	}
 	if !adopted {
 		t.Fatal("adoption must journal import_adopted")
+	}
+}
+
+// --- Story 2.4: inbound updates ---
+
+func TestInboundUpdateAppliesAndForwardsSnapshots(t *testing.T) {
+	f := newFakeJira(t)
+	now := time.Now().UTC()
+	var phase atomic.Int64
+	f.mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		if phase.Load() == 0 {
+			fmt.Fprintf(w, `{"issues":[%s],"isLast":true}`,
+				searchIssueWithCategory("GAME-10", now.Add(-5*time.Minute), "100", "new"))
+			return
+		}
+		// Remote edit: title, description, status all changed.
+		fmt.Fprintf(w, `{"issues":[{"id":"id-GAME-10","key":"GAME-10","fields":{
+			"summary":"Renamed remotely",
+			"description":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"new body"}]}]},
+			"status":{"id":"200","name":"In Progress","statusCategory":{"key":"indeterminate"}},
+			"labels":[],
+			"updated":%q
+		}}],"isLast":true}`, now.Add(-1*time.Minute).Format(jiraTimeLayout))
+	})
+	w, conn, q := importFixture(t, f)
+	ctx := context.Background()
+
+	if _, err := w.runCycle(ctx, conn); err != nil {
+		t.Fatalf("import cycle: %v", err)
+	}
+	phase.Store(1)
+	conn2, _ := q.GetJiraConnectionByID(ctx, conn.ID)
+	// Rewind cursor so the edited issue re-enters the window.
+	if err := q.UpdateJiraConnectionCursors(ctx, db.UpdateJiraConnectionCursorsParams{
+		ID: conn.ID, JiraCursor: pgtype.Timestamptz{Time: now.Add(-10 * time.Minute), Valid: true}, LocalCursor: conn2.LocalCursor,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	conn2, _ = q.GetJiraConnectionByID(ctx, conn.ID)
+	if _, err := w.runCycle(ctx, conn2); err != nil {
+		t.Fatalf("update cycle: %v", err)
+	}
+
+	link, _ := q.GetJiraLinkByJiraIssueID(ctx, db.GetJiraLinkByJiraIssueIDParams{ConnectionID: conn.ID, JiraIssueID: "id-GAME-10"})
+	issue, err := q.GetIssue(ctx, link.IssueID)
+	if err != nil || issue.Title != "Renamed remotely" || issue.Status != "in_progress" || issue.Description.String != "new body" {
+		t.Fatalf("inbound update not applied: %v %+v", err, issue)
+	}
+	items, err := ParseItems(link.Items)
+	if err != nil || items.Title.RemoteSHA != SHA("Renamed remotely") || items.Title.LocalSHA != SHA("Renamed remotely") {
+		t.Fatalf("snapshots not forwarded: %v %+v", err, items)
+	}
+	if items.Status.RemoteID != "200" || items.Status.Local != "in_progress" {
+		t.Fatalf("status snapshot wrong: %+v", items.Status)
+	}
+}
+
+func TestInboundDivergenceBreadcrumbOnceAndLocalActivationSafe(t *testing.T) {
+	f := newFakeJira(t)
+	now := time.Now().UTC()
+	var remoteTitle atomic.Value
+	remoteTitle.Store("Imported GAME-11")
+	f.mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"issues":[{"id":"id-GAME-11","key":"GAME-11","fields":{
+			"summary":%q,
+			"description":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"body"}]}]},
+			"status":{"id":"100","name":"To Do","statusCategory":{"key":"new"}},
+			"labels":[],
+			"updated":%q
+		}}],"isLast":true}`, remoteTitle.Load(), now.Format(jiraTimeLayout))
+	})
+	w, conn, q := importFixture(t, f)
+	ctx := context.Background()
+
+	if _, err := w.runCycle(ctx, conn); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	link, _ := q.GetJiraLinkByJiraIssueID(ctx, db.GetJiraLinkByJiraIssueIDParams{ConnectionID: conn.ID, JiraIssueID: "id-GAME-11"})
+
+	// Human edits the title AND an agent-ish local status change happens.
+	if _, err := q.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{ID: link.IssueID, Status: "in_progress", WorkspaceID: conn.WorkspaceID}); err != nil {
+		t.Fatal(err)
+	}
+	cur, _ := q.GetIssue(ctx, link.IssueID)
+	if _, err := q.UpdateIssue(ctx, db.UpdateIssueParams{
+		ID: cur.ID, Title: pgtype.Text{String: "Local human title", Valid: true},
+		Description: cur.Description, AssigneeType: cur.AssigneeType, AssigneeID: cur.AssigneeID,
+		StartDate: cur.StartDate, DueDate: cur.DueDate, ParentIssueID: cur.ParentIssueID,
+		ProjectID: cur.ProjectID, Stage: cur.Stage,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Remote title changes too → divergence; jira_leads ⇒ Jira wins,
+	// breadcrumb posted exactly once; local status must NOT be reverted
+	// (unchanged remote status is change-driven, FR-16).
+	remoteTitle.Store("Jira wins title")
+	rewind := func() db.JiraConnection {
+		c, _ := q.GetJiraConnectionByID(ctx, conn.ID)
+		_ = q.UpdateJiraConnectionCursors(ctx, db.UpdateJiraConnectionCursorsParams{
+			ID: conn.ID, JiraCursor: pgtype.Timestamptz{Time: now.Add(-10 * time.Minute), Valid: true}, LocalCursor: c.LocalCursor,
+		})
+		c, _ = q.GetJiraConnectionByID(ctx, conn.ID)
+		return c
+	}
+	if _, err := w.runCycle(ctx, rewind()); err != nil {
+		t.Fatalf("divergence cycle: %v", err)
+	}
+
+	issue, _ := q.GetIssue(ctx, link.IssueID)
+	if issue.Title != "Jira wins title" {
+		t.Fatalf("leading side must win: %+v", issue.Title)
+	}
+	if issue.Status != "in_progress" {
+		t.Fatalf("unchanged remote status must not revert local activation (FR-16/FR-27): %s", issue.Status)
+	}
+	countBreadcrumbs := func() int {
+		rows, err := q.ListCommentsForIssue(ctx, db.ListCommentsForIssueParams{IssueID: link.IssueID, WorkspaceID: conn.WorkspaceID, Limit: 100})
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, c := range rows {
+			if c.AuthorType == "system" && strings.Contains(c.Content, "overwritten") {
+				n++
+			}
+		}
+		return n
+	}
+	if got := countBreadcrumbs(); got != 1 {
+		t.Fatalf("want exactly one breadcrumb, got %d", got)
+	}
+
+	// Replay the same divergence window: no second breadcrumb, no rewrites.
+	if _, err := w.runCycle(ctx, rewind()); err != nil {
+		t.Fatalf("replay cycle: %v", err)
+	}
+	if got := countBreadcrumbs(); got != 1 {
+		t.Fatalf("breadcrumb must not repeat, got %d", got)
+	}
+}
+
+func TestInboundLossyFixpointNoChurn(t *testing.T) {
+	f := newFakeJira(t)
+	now := time.Now().UTC()
+	f.mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"issues":[{"id":"id-GAME-12","key":"GAME-12","fields":{
+			"summary":"Lossy",
+			"description":{"type":"doc","version":1,"content":[
+				{"type":"paragraph","content":[{"type":"text","text":"before"}]},
+				{"type":"mediaSingle","content":[{"type":"media","attrs":{"id":"x"}}]}
+			]},
+			"status":{"id":"100","name":"To Do","statusCategory":{"key":"new"}},
+			"labels":[],
+			"updated":%q
+		}}],"isLast":true}`, now.Format(jiraTimeLayout))
+	})
+	w, conn, q := importFixture(t, f)
+	ctx := context.Background()
+
+	if _, err := w.runCycle(ctx, conn); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	link, _ := q.GetJiraLinkByJiraIssueID(ctx, db.GetJiraLinkByJiraIssueIDParams{ConnectionID: conn.ID, JiraIssueID: "id-GAME-12"})
+	before, _ := q.GetIssue(ctx, link.IssueID)
+
+	for i := 0; i < 3; i++ {
+		c, _ := q.GetJiraConnectionByID(ctx, conn.ID)
+		_ = q.UpdateJiraConnectionCursors(ctx, db.UpdateJiraConnectionCursorsParams{
+			ID: conn.ID, JiraCursor: pgtype.Timestamptz{Time: now.Add(-10 * time.Minute), Valid: true}, LocalCursor: c.LocalCursor,
+		})
+		c, _ = q.GetJiraConnectionByID(ctx, conn.ID)
+		if _, err := w.runCycle(ctx, c); err != nil {
+			t.Fatalf("cycle %d: %v", i, err)
+		}
+	}
+	after, _ := q.GetIssue(ctx, link.IssueID)
+	if !after.UpdatedAt.Time.Equal(before.UpdatedAt.Time) {
+		t.Fatalf("lossy conversion must reach a fixpoint (no churn writes): %v vs %v", before.UpdatedAt, after.UpdatedAt)
+	}
+}
+
+func TestDirtyLadderIsolatesPoisonAndRecovers(t *testing.T) {
+	f := newFakeJira(t)
+	now := time.Now().UTC()
+	f.mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"issues":[%s,%s],"isLast":true}`,
+			searchIssueWithCategory("GAME-13", now.Add(-2*time.Minute), "100", "new"),
+			searchIssueWithCategory("GAME-14", now.Add(-1*time.Minute), "100", "new"))
+	})
+	f.mux.HandleFunc("/rest/api/3/issue/", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"id":"id-GAME-13","key":"GAME-13","fields":{
+			"summary":"Imported GAME-13",
+			"status":{"id":"100","name":"To Do","statusCategory":{"key":"new"}},
+			"labels":[],
+			"updated":%q
+		}}`, now.Format(jiraTimeLayout))
+	})
+	w, conn, q := importFixture(t, f)
+	ctx := context.Background()
+
+	if _, err := w.runCycle(ctx, conn); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	link13, _ := q.GetJiraLinkByJiraIssueID(ctx, db.GetJiraLinkByJiraIssueIDParams{ConnectionID: conn.ID, JiraIssueID: "id-GAME-13"})
+
+	// Poison one link: unknown items version makes its update fail.
+	if err := q.UpdateJiraLinkItems(ctx, db.UpdateJiraLinkItemsParams{
+		ID: link13.ID, Items: []byte(`{"v":2}`), JiraKey: link13.JiraKey,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rewound, _ := q.GetJiraConnectionByID(ctx, conn.ID)
+	_ = q.UpdateJiraConnectionCursors(ctx, db.UpdateJiraConnectionCursorsParams{
+		ID: conn.ID, JiraCursor: pgtype.Timestamptz{Time: now.Add(-10 * time.Minute), Valid: true}, LocalCursor: rewound.LocalCursor,
+	})
+	rewound, _ = q.GetJiraConnectionByID(ctx, conn.ID)
+	if _, err := w.runCycle(ctx, rewound); err != nil {
+		t.Fatalf("poisoned cycle must still succeed (NFR-3): %v", err)
+	}
+
+	link13, _ = q.GetJiraLinkByJiraIssueID(ctx, db.GetJiraLinkByJiraIssueIDParams{ConnectionID: conn.ID, JiraIssueID: "id-GAME-13"})
+	if !link13.Dirty || link13.RetryCount != 1 {
+		t.Fatalf("poison item must go dirty with ladder: %+v", link13)
+	}
+	got, _ := q.GetJiraConnectionByID(ctx, conn.ID)
+	if !got.JiraCursor.Valid || got.JiraCursor.Time.Before(now.Add(-90*time.Second)) {
+		t.Fatalf("cursor must still advance past the poison (AD-2): %+v", got.JiraCursor)
+	}
+
+	// Heal the items and make the retry due: the dirty rescan path refreshes
+	// via GET /issue/{id} and recovers.
+	healthy, _ := json.Marshal(ItemsV1{V: 1, Fields: map[string]ItemState{}})
+	if err := q.UpdateJiraLinkItems(ctx, db.UpdateJiraLinkItemsParams{ID: link13.ID, Items: healthy, JiraKey: link13.JiraKey}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.MarkJiraLinkDirty(ctx, db.MarkJiraLinkDirtyParams{ID: link13.ID, RetryAt: pgtype.Timestamptz{Time: now.Add(-time.Minute), Valid: true}}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = q.GetJiraConnectionByID(ctx, conn.ID)
+	if _, err := w.runCycle(ctx, got); err != nil {
+		t.Fatalf("recovery cycle: %v", err)
+	}
+	link13, _ = q.GetJiraLinkByJiraIssueID(ctx, db.GetJiraLinkByJiraIssueIDParams{ConnectionID: conn.ID, JiraIssueID: "id-GAME-13"})
+	if link13.Dirty {
+		t.Fatalf("recovered link must clear dirty: %+v", link13)
 	}
 }

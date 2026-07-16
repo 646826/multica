@@ -36,6 +36,9 @@ const (
 	// Inbound import (AD-15 protocol).
 	JournalImportAdopted      JournalKind = "import_adopted"
 	JournalImportMarkerFailed JournalKind = "import_marker_failed"
+	// Per-item transient failures (dirty ladder, AD-2) with recovery pairing.
+	JournalItemDirty     JournalKind = "item_dirty"
+	JournalItemRecovered JournalKind = "item_recovered"
 )
 
 // journalKinds is the registry; Record refuses kinds outside it.
@@ -48,6 +51,8 @@ var journalKinds = map[JournalKind]bool{
 	JournalInboundSuppressed:  true,
 	JournalImportAdopted:      true,
 	JournalImportMarkerFailed: true,
+	JournalItemDirty:          true,
+	JournalItemRecovered:      true,
 }
 
 // Journal retention bounds (operational envelope): whichever prunes more.

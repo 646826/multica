@@ -5,12 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // apply_in.go — inbound appliers (Jira → Multica). All Multica mutations run
@@ -130,4 +134,218 @@ func (w *Worker) finalizeImport(ctx context.Context, link db.JiraLink, issueID p
 		JiraKey: obs.Key,
 		Items:   raw,
 	})
+}
+
+// --- Inbound updates (Story 2.4) ---
+
+// dirtyLadder is the transient-failure retry backoff (operational envelope).
+var dirtyLadder = []time.Duration{time.Minute, 5 * time.Minute, 30 * time.Minute, 6 * time.Hour}
+
+func nextRetryAt(now time.Time, retryCount int32) time.Time {
+	idx := int(retryCount)
+	if idx >= len(dirtyLadder) {
+		idx = len(dirtyLadder) - 1
+	}
+	return now.Add(dirtyLadder[idx])
+}
+
+// updateIssue reconciles one Linked pair from a fresh remote observation:
+// plan against the two-sided snapshots, apply the inbound actions through the
+// system-actor paths, forward the snapshots (AD-5), and journal every skip.
+// Outbound actions the planner emits are deferred to the outbound appliers
+// (Epic 4) — snapshots stay unchanged for them, so nothing is lost.
+// A failure marks the Link dirty (ladder) and never fails the cycle (NFR-3).
+func (w *Worker) updateIssue(ctx context.Context, conn db.JiraConnection, sm StatusMap, fieldMap []FieldMapRow, link db.JiraLink, obs ObservedIssue, cycleID pgtype.UUID) {
+	if err := w.updateIssueOnce(ctx, conn, sm, fieldMap, link, obs, cycleID); err != nil {
+		_ = w.Journal.Record(ctx, conn, cycleID, JournalItemDirty, link.IssueID, obs.Key, map[string]any{
+			"error": redactError(err), "retry_count": link.RetryCount + 1,
+		})
+		if merr := w.Q.MarkJiraLinkDirty(ctx, db.MarkJiraLinkDirtyParams{
+			ID:      link.ID,
+			RetryAt: pgtype.Timestamptz{Time: nextRetryAt(w.now(), link.RetryCount), Valid: true},
+		}); merr != nil {
+			slog.Error("jira: mark dirty failed", "link_id", uuidStr(link.ID), "error", merr)
+		}
+		return
+	}
+	if link.Dirty {
+		if cerr := w.Q.ClearJiraLinkDirty(ctx, link.ID); cerr != nil {
+			slog.Error("jira: clear dirty failed", "link_id", uuidStr(link.ID), "error", cerr)
+		} else {
+			_ = w.Journal.Record(ctx, conn, cycleID, JournalItemRecovered, link.IssueID, obs.Key, nil)
+		}
+	}
+}
+
+func (w *Worker) updateIssueOnce(ctx context.Context, conn db.JiraConnection, sm StatusMap, fieldMap []FieldMapRow, link db.JiraLink, obs ObservedIssue, cycleID pgtype.UUID) error {
+	items, err := ParseItems(link.Items)
+	if err != nil {
+		return err
+	}
+	issue, err := w.Q.GetIssue(ctx, link.IssueID)
+	if err != nil {
+		return fmt.Errorf("load local issue: %w", err)
+	}
+	settings := settingsFromConnection(conn)
+	loc := &LocalIssue{
+		Title:         issue.Title,
+		DescriptionMD: CanonicalMarkdown(issue.Description.String),
+		Status:        issue.Status,
+	}
+
+	actions := PlanIssue(PlanInput{
+		Settings:  settings,
+		StatusMap: sm,
+		FieldMap:  fieldMap,
+		Items:     items,
+		Remote:    &obs,
+		Local:     loc,
+	})
+
+	changedFields := false
+	newTitle, newDescription := issue.Title, issue.Description
+	for _, act := range actions {
+		switch act.Kind {
+		case ActInTitle:
+			newTitle = act.Value
+			changedFields = true
+			items.Title = ItemState{RemoteSHA: SHA(act.Value), LocalSHA: SHA(act.Value), BreadcrumbFor: items.Title.BreadcrumbFor}
+		case ActInDescription:
+			newDescription = pgtype.Text{String: act.Value, Valid: act.Value != ""}
+			changedFields = true
+			items.Description = ItemState{RemoteSHA: SHA(act.Value), LocalSHA: SHA(act.Value), BreadcrumbFor: items.Description.BreadcrumbFor}
+		case ActInStatus:
+			updated, uerr := w.Q.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+				ID: issue.ID, Status: act.Target, WorkspaceID: conn.WorkspaceID,
+			})
+			if uerr != nil {
+				return fmt.Errorf("apply status: %w", uerr)
+			}
+			w.publishIssueUpdated(conn, updated)
+			items.Status = StatusState{RemoteID: act.Value, Local: act.Target, BreadcrumbFor: items.Status.BreadcrumbFor}
+			issue.Status = act.Target
+		case ActBreadcrumbIn:
+			if berr := w.postLocalBreadcrumb(ctx, conn, issue, act); berr != nil {
+				return fmt.Errorf("breadcrumb: %w", berr)
+			}
+			switch act.Item {
+			case "title":
+				items.Title.BreadcrumbFor = SHA(act.Old)
+			case "description":
+				items.Description.BreadcrumbFor = SHA(act.Old)
+			case "status":
+				items.Status.BreadcrumbFor = SHA(act.Old)
+			}
+		case ActSkip:
+			_ = w.Journal.Record(ctx, conn, cycleID, act.Journal, link.IssueID, obs.Key, act.Detail)
+		default:
+			// Outbound kinds (out_*, breadcrumb_remote) are Epic 4's job and
+			// label/field inbound applies land with Epic 5; snapshots for
+			// those items stay untouched so their appliers see the same
+			// divergence on their cycle.
+		}
+	}
+
+	if changedFields {
+		if _, uerr := w.Q.UpdateIssue(ctx, db.UpdateIssueParams{
+			ID:          issue.ID,
+			Title:       pgtype.Text{String: newTitle, Valid: true},
+			Description: newDescription,
+			// Non-COALESCE columns must be passed through, or the update
+			// would clear them (UpdateIssue overwrites nargs verbatim).
+			AssigneeType:  issue.AssigneeType,
+			AssigneeID:    issue.AssigneeID,
+			StartDate:     issue.StartDate,
+			DueDate:       issue.DueDate,
+			ParentIssueID: issue.ParentIssueID,
+			ProjectID:     issue.ProjectID,
+			Stage:         issue.Stage,
+		}); uerr != nil {
+			return fmt.Errorf("apply fields: %w", uerr)
+		}
+		w.publishIssueUpdated(conn, issue)
+	}
+
+	// Track the remote status pair even when nothing was applied this cycle
+	// (change-driven detection depends on the last-observed remote id).
+	if obs.StatusID != "" && items.Status.RemoteID != obs.StatusID {
+		// Status changed remotely but was not applied (skip/unmapped/out-mode):
+		// record the observation so the same change does not re-plan forever.
+		items.Status.RemoteID = obs.StatusID
+	}
+
+	raw, err := json.Marshal(items)
+	if err != nil {
+		return err
+	}
+	return w.Q.UpdateJiraLinkItems(ctx, db.UpdateJiraLinkItemsParams{
+		ID: link.ID, Items: raw, JiraKey: obs.Key,
+	})
+}
+
+// publishIssueUpdated mirrors the ratified system-actor publication
+// (handler/github.go:1364-1384) so realtime/notification listeners see the
+// change exactly as they would a GitHub-driven one.
+func (w *Worker) publishIssueUpdated(conn db.JiraConnection, issue db.Issue) {
+	if w.Bus == nil {
+		return
+	}
+	w.Bus.Publish(events.Event{
+		Type:        protocol.EventIssueUpdated,
+		WorkspaceID: uuidStr(conn.WorkspaceID),
+		ActorType:   "system",
+		ActorID:     "",
+		Payload: map[string]any{
+			"issue_id": uuidStr(issue.ID),
+			"status":   issue.Status,
+			"source":   "jira_sync",
+		},
+	})
+}
+
+// postLocalBreadcrumb records an overwrite on the Multica side as an inert
+// system comment (FR-8/FR-21): author_type=system, zero author, type=system —
+// it never enters trigger paths and is not realtime-published in v1
+// (visible on the issue thread; realtime wiring arrives with the comment
+// bridge in Epic 3).
+func (w *Worker) postLocalBreadcrumb(ctx context.Context, conn db.JiraConnection, issue db.Issue, act Action) error {
+	content := fmt.Sprintf("Jira sync: %s was overwritten by the leading system.\n\nPrevious value:\n\n%s", act.Item, truncateForComment(act.Old))
+	_, err := w.Q.CreateComment(ctx, db.CreateCommentParams{
+		IssueID:     issue.ID,
+		WorkspaceID: conn.WorkspaceID,
+		AuthorType:  "system",
+		AuthorID:    pgtype.UUID{Valid: true}, // zero UUID: the platform system actor
+		Content:     content,
+		Type:        "system",
+	})
+	return err
+}
+
+func truncateForComment(s string) string {
+	if len(s) > 2000 {
+		return s[:2000] + "\n…(truncated)"
+	}
+	return s
+}
+
+// settingsFromConnection projects the persisted row into planner Settings.
+func settingsFromConnection(conn db.JiraConnection) Settings {
+	return Settings{
+		Enabled:              conn.Enabled,
+		Mode:                 conn.Mode,
+		LeadingSystem:        conn.LeadingSystem,
+		CommentsEnabled:      conn.CommentsEnabled,
+		LabelsEnabled:        conn.LabelsEnabled,
+		CustomFieldsEnabled:  conn.CustomFieldsEnabled,
+		CreateFromJira:       conn.CreateFromJira,
+		CreateToJira:         conn.CreateToJira,
+		JQLFilter:            conn.JqlFilter,
+		LabelPrefix:          conn.LabelPrefix,
+		MentionBridgeEnabled: conn.MentionBridgeEnabled,
+		OutboundIssueType:    conn.OutboundIssueType,
+		StatusMap:            conn.StatusMap,
+		FieldMap:             conn.FieldMap,
+		TagRules:             conn.TagRules,
+		CycleIntervalSeconds: conn.CycleIntervalSeconds,
+	}
 }

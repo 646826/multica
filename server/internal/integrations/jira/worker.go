@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -42,6 +43,7 @@ type Worker struct {
 	Q       *db.Queries
 	Svc     *Service
 	Issues  *service.IssueService
+	Bus     *events.Bus
 	Journal *Journal
 
 	// nextRun tracks per-connection due times in-process (jittered cadence);
@@ -53,12 +55,13 @@ type Worker struct {
 	sleep func(d time.Duration)
 }
 
-func NewWorker(pool *pgxpool.Pool, q *db.Queries, svc *Service, issues *service.IssueService) *Worker {
+func NewWorker(pool *pgxpool.Pool, q *db.Queries, svc *Service, issues *service.IssueService, bus *events.Bus) *Worker {
 	return &Worker{
 		Pool:    pool,
 		Q:       q,
 		Svc:     svc,
 		Issues:  issues,
+		Bus:     bus,
 		Journal: &Journal{Q: q},
 		nextRun: map[[16]byte]time.Time{},
 		now:     time.Now,
@@ -208,12 +211,50 @@ func (w *Worker) cycleBody(ctx context.Context, conn db.JiraConnection, cycleID 
 			}
 		case link.State == "ok":
 			seenLinked = append(seenLinked, obs.ID)
-			// Update path lands with Story 2.4; observation is recorded so
-			// the orphan sweep never flags a live pair.
+			w.updateIssue(ctx, conn, sm, fieldRows, link, obs, cycleID)
 		default:
 			// dormant/orphaned pairs are fully suspended (FR-11/FR-14).
 		}
 	}
+	// Dirty rescan (AD-2): due retries re-enter the observe set with a fresh
+	// single-issue fetch, so a poison item never pins the Cursor.
+	dirty, derr := w.Q.ListDueDirtyJiraLinks(ctx, db.ListDueDirtyJiraLinksParams{
+		ConnectionID: conn.ID, Limit: 50,
+	})
+	if derr != nil {
+		return client.Requests(), derr
+	}
+	for _, link := range dirty {
+		if link.State != "ok" {
+			continue
+		}
+		remote, gerr := client.GetIssue(ctx, link.JiraIssueID, fieldIDs)
+		if gerr != nil {
+			_ = w.Journal.Record(ctx, conn, cycleID, JournalItemDirty, link.IssueID, link.JiraKey, map[string]any{
+				"error": redactError(gerr), "at": "dirty_refresh",
+			})
+			if merr := w.Q.MarkJiraLinkDirty(ctx, db.MarkJiraLinkDirtyParams{
+				ID:      link.ID,
+				RetryAt: pgtype.Timestamptz{Time: nextRetryAt(w.now(), link.RetryCount), Valid: true},
+			}); merr != nil {
+				slog.Error("jira: re-mark dirty failed", "link_id", uuidStr(link.ID), "error", merr)
+			}
+			continue
+		}
+		md, lossy := ADFToMarkdown(remote.DescriptionADF)
+		obs := ObservedIssue{
+			ID: remote.ID, Key: remote.Key, Summary: remote.Summary,
+			DescriptionMD: md, DescriptionLossy: lossy,
+			StatusID: remote.StatusID, StatusName: remote.StatusName,
+			StatusCategory: remote.StatusCategory, Labels: remote.Labels,
+			Fields: map[string]string{}, Updated: remote.Updated,
+		}
+		for k, v := range remote.Fields {
+			obs.Fields[k] = string(v)
+		}
+		w.updateIssue(ctx, conn, sm, fieldRows, link, obs, cycleID)
+	}
+
 	if len(seenLinked) > 0 {
 		if err := w.Q.TouchJiraLinksSeen(ctx, db.TouchJiraLinksSeenParams{
 			ConnectionID: conn.ID, Column2: seenLinked,

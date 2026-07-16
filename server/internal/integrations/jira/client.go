@@ -368,40 +368,7 @@ func (c *Client) SearchUpdated(ctx context.Context, projectKey, extraJQL string,
 			return nil, false, err
 		}
 		for _, it := range page.Issues {
-			ri := RemoteIssue{ID: it.ID, Key: it.Key, Fields: map[string]json.RawMessage{}}
-			if v, ok := it.Fields["summary"]; ok {
-				_ = json.Unmarshal(v, &ri.Summary)
-			}
-			if v, ok := it.Fields["description"]; ok && string(v) != "null" {
-				ri.DescriptionADF = v
-			}
-			if v, ok := it.Fields["status"]; ok {
-				var st struct {
-					ID             string `json:"id"`
-					Name           string `json:"name"`
-					StatusCategory struct {
-						Key string `json:"key"`
-					} `json:"statusCategory"`
-				}
-				_ = json.Unmarshal(v, &st)
-				ri.StatusID, ri.StatusName, ri.StatusCategory = st.ID, st.Name, st.StatusCategory.Key
-			}
-			if v, ok := it.Fields["labels"]; ok {
-				_ = json.Unmarshal(v, &ri.Labels)
-			}
-			if v, ok := it.Fields["updated"]; ok {
-				var s string
-				if json.Unmarshal(v, &s) == nil {
-					if ts, perr := time.Parse(jiraTimeLayout, s); perr == nil {
-						ri.Updated = ts
-					}
-				}
-			}
-			for _, fid := range fieldIDs {
-				if v, ok := it.Fields[fid]; ok && string(v) != "null" {
-					ri.Fields[fid] = v
-				}
-			}
+			ri := parseRemoteIssue(it.ID, it.Key, it.Fields, fieldIDs)
 			issues = append(issues, ri)
 			if len(issues) >= pageCap {
 				return issues, true, nil
@@ -448,4 +415,60 @@ func (c *Client) ProjectStatuses(ctx context.Context, projectKey string) ([]Proj
 		}
 	}
 	return out, nil
+}
+
+// parseRemoteIssue extracts the raw observation snapshot from a Jira issue's
+// fields map (shared by search pages and single-issue fetches).
+func parseRemoteIssue(id, key string, fields map[string]json.RawMessage, fieldIDs []string) RemoteIssue {
+	ri := RemoteIssue{ID: id, Key: key, Fields: map[string]json.RawMessage{}}
+	if v, ok := fields["summary"]; ok {
+		_ = json.Unmarshal(v, &ri.Summary)
+	}
+	if v, ok := fields["description"]; ok && string(v) != "null" {
+		ri.DescriptionADF = v
+	}
+	if v, ok := fields["status"]; ok {
+		var st struct {
+			ID             string `json:"id"`
+			Name           string `json:"name"`
+			StatusCategory struct {
+				Key string `json:"key"`
+			} `json:"statusCategory"`
+		}
+		_ = json.Unmarshal(v, &st)
+		ri.StatusID, ri.StatusName, ri.StatusCategory = st.ID, st.Name, st.StatusCategory.Key
+	}
+	if v, ok := fields["labels"]; ok {
+		_ = json.Unmarshal(v, &ri.Labels)
+	}
+	if v, ok := fields["updated"]; ok {
+		var s string
+		if json.Unmarshal(v, &s) == nil {
+			if ts, perr := time.Parse(jiraTimeLayout, s); perr == nil {
+				ri.Updated = ts
+			}
+		}
+	}
+	for _, fid := range fieldIDs {
+		if v, ok := fields[fid]; ok && string(v) != "null" {
+			ri.Fields[fid] = v
+		}
+	}
+	return ri
+}
+
+// GetIssue fetches one issue's observation snapshot by immutable id (the
+// dirty-retry refresh path, AD-2).
+func (c *Client) GetIssue(ctx context.Context, issueID string, fieldIDs []string) (RemoteIssue, error) {
+	fields := append([]string{"summary", "description", "status", "labels", "updated"}, fieldIDs...)
+	var payload struct {
+		ID     string                     `json:"id"`
+		Key    string                     `json:"key"`
+		Fields map[string]json.RawMessage `json:"fields"`
+	}
+	q := url.Values{"fields": {strings.Join(fields, ",")}}
+	if err := c.do(ctx, http.MethodGet, "/rest/api/3/issue/"+url.PathEscape(issueID), q, nil, &payload); err != nil {
+		return RemoteIssue{}, err
+	}
+	return parseRemoteIssue(payload.ID, payload.Key, payload.Fields, fieldIDs), nil
 }
