@@ -206,6 +206,17 @@ func (w *Worker) updateIssueOnce(ctx context.Context, conn db.JiraConnection, sm
 			loc.Labels = append(loc.Labels, l.Name)
 		}
 	}
+	loc.Fields = map[string]string{}
+	if len(issue.Properties) > 0 {
+		var props map[string]json.RawMessage
+		if json.Unmarshal(issue.Properties, &props) == nil {
+			for _, row := range fieldMap {
+				if v, ok := props[row.PropertyID]; ok {
+					loc.Fields[row.PropertyID] = canonicalPropertyValue(v)
+				}
+			}
+		}
+	}
 
 	actions := PlanIssue(PlanInput{
 		Settings:  settings,
@@ -222,6 +233,7 @@ func (w *Worker) updateIssueOnce(ctx context.Context, conn db.JiraConnection, sm
 	var outApply []func(*ObservedIssue)
 	var outBreadcrumbs []Action
 	var outLabelsAct *Action
+	var outFieldActs []Action
 	newTitle, newDescription := issue.Title, issue.Description
 	for _, act := range actions {
 		switch act.Kind {
@@ -280,6 +292,13 @@ func (w *Worker) updateIssueOnce(ctx context.Context, conn db.JiraConnection, sm
 			}
 		case ActOutLabels:
 			outLabelsAct = &act
+		case ActInField:
+			if ferr := w.applyInField(ctx, conn, issue.ID, &items, act, cycleID); ferr != nil {
+				return ferr
+			}
+		case ActOutField:
+			a := act
+			outFieldActs = append(outFieldActs, a)
 		case ActSkip:
 			_ = w.Journal.Record(ctx, conn, cycleID, act.Journal, link.IssueID, link.JiraKey, act.Detail)
 		default:
@@ -307,6 +326,33 @@ func (w *Worker) updateIssueOnce(ctx context.Context, conn db.JiraConnection, sm
 		}
 		outFields["labels"] = jiraLabels
 		items.Labels = targetState
+	}
+
+	// Outbound mapped custom fields fold into the same PUT (FR-24).
+	fieldMapByExternal := map[string]FieldMapRow{}
+	for _, r := range fieldMap {
+		fieldMapByExternal[r.ExternalField] = r
+	}
+	for _, act := range outFieldActs {
+		external, _ := act.Detail["external_field"].(string)
+		row, ok := fieldMapByExternal[external]
+		if !ok {
+			continue
+		}
+		jt := w.jiraFieldType(ctx, conn, external)
+		wire, wok := PropertyToJiraRaw(json.RawMessage(act.Value), jt)
+		if !wok {
+			_ = w.Journal.Record(ctx, conn, cycleID, JournalFieldSkipped, issue.ID, link.JiraKey, map[string]any{
+				"external_field": external, "reason": "value not mappable to jira type " + jt,
+			})
+			continue
+		}
+		outFields[external] = wire
+		itemState := items.Fields[external]
+		itemState.LocalSHA = SHA(act.Value)
+		itemState.RemoteSHA = SHA(act.Value)
+		items.Fields[external] = itemState
+		_ = row
 	}
 
 	// Coalesced outbound field PUT (FR-12 outbound / FR-20): at most one write

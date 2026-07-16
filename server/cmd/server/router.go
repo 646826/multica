@@ -883,9 +883,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// the handler strips the management handle and adds a
 					// can_manage hint so the UI can gate connect/disconnect.
 					r.Get("/github/installations", h.ListGitHubInstallations)
-				// Jira connection state is member-visible for the same
-				// reason; management stays admin-only below.
-				r.Get("/jira", h.GetJiraConnection)
+					// Jira connection state is member-visible for the same
+					// reason; management stays admin-only below.
+					r.Get("/jira", h.GetJiraConnection)
 					// Custom runtime profiles — listing/reading is member-visible
 					// (the Runtime page renders for everyone; create/edit/delete
 					// are admin-gated below).
@@ -924,6 +924,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Patch("/jira", h.PatchJiraConnection)
 					r.Delete("/jira", h.DeleteJiraConnection)
 					r.Post("/jira/projects", h.ListJiraProjects)
+					r.Get("/jira/fields", h.ListJiraFields)
+					r.Get("/jira/statuses", h.ListJiraStatuses)
 				})
 
 				// Lark integration. Every endpoint here only requires

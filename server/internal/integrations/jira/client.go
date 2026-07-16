@@ -648,3 +648,33 @@ func mergeFields(base, extra map[string]any) map[string]any {
 	}
 	return base
 }
+
+// JiraField is one entry of the project/site custom-field catalog.
+type JiraField struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Schema struct {
+		Type  string `json:"type"`
+		Items string `json:"items,omitempty"`
+	} `json:"schema"`
+}
+
+// ListFields returns the site's field catalog (custom + system) for the
+// mapping editor. Cached by the caller per connection.
+func (c *Client) ListFields(ctx context.Context) ([]JiraField, error) {
+	var out []JiraField
+	if err := c.do(ctx, http.MethodGet, "/rest/api/3/field", nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetIssueRawFields fetches the raw values of specific fields for one issue
+// (mapped-field observation on the dirty-refresh path when needed).
+func (c *Client) GetIssueRawField(ctx context.Context, issueID, fieldID string) (json.RawMessage, error) {
+	ri, err := c.GetIssue(ctx, issueID, []string{fieldID})
+	if err != nil {
+		return nil, err
+	}
+	return ri.Fields[fieldID], nil
+}

@@ -470,3 +470,75 @@ func (h *Handler) GetIssueJiraLink(w http.ResponseWriter, r *http.Request) {
 		"state":    state,
 	})
 }
+
+// ListJiraFields returns the connected site's field catalog for the mapping
+// editor (admin-only; live catalog). Requires an existing connection.
+func (h *Handler) ListJiraFields(w http.ResponseWriter, r *http.Request) {
+	wsUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workspace id")
+	if !ok {
+		return
+	}
+	if !h.jiraConfigured() {
+		writeError(w, http.StatusServiceUnavailable, "jira integration is not configured on this deployment")
+		return
+	}
+	conn, err := h.Queries.GetJiraConnectionByWorkspace(r.Context(), wsUUID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusBadRequest, "connect a jira project first")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load jira connection")
+		return
+	}
+	client, err := h.Jira.ClientFor(conn)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	fields, err := client.ListFields(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "failed to list jira fields: "+err.Error())
+		return
+	}
+	out := make([]map[string]any, 0, len(fields))
+	for _, f := range fields {
+		out = append(out, map[string]any{"id": f.ID, "name": f.Name, "type": f.Schema.Type})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"fields": out})
+}
+
+// ListJiraStatuses returns the connected project's workflow statuses (mapping
+// editor source; admin-only).
+func (h *Handler) ListJiraStatuses(w http.ResponseWriter, r *http.Request) {
+	wsUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workspace id")
+	if !ok {
+		return
+	}
+	if !h.jiraConfigured() {
+		writeError(w, http.StatusServiceUnavailable, "jira integration is not configured on this deployment")
+		return
+	}
+	conn, err := h.Queries.GetJiraConnectionByWorkspace(r.Context(), wsUUID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusBadRequest, "connect a jira project first")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load jira connection")
+		return
+	}
+	client, err := h.Jira.ClientFor(conn)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	statuses, err := client.ProjectStatuses(r.Context(), conn.ProjectKey)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "failed to list jira statuses: "+err.Error())
+		return
+	}
+	out := make([]map[string]any, 0, len(statuses))
+	for _, s := range statuses {
+		out = append(out, map[string]any{"id": s.ID, "name": s.Name, "category": s.Category})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"statuses": out})
+}

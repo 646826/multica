@@ -51,6 +51,7 @@ const (
 	JournalOutboundCreated  JournalKind = "outbound_created"
 	JournalCreateRejected   JournalKind = "create_rejected"
 	JournalLabelTransformed JournalKind = "label_transformed"
+	JournalFieldSkipped     JournalKind = "field_skipped"
 	JournalScopeResumed     JournalKind = "scope_resumed"
 	JournalLinkOrphaned     JournalKind = "link_orphaned"
 )
@@ -75,6 +76,7 @@ var journalKinds = map[JournalKind]bool{
 	JournalOutboundCreated:          true,
 	JournalCreateRejected:           true,
 	JournalLabelTransformed:         true,
+	JournalFieldSkipped:             true,
 	JournalScopeResumed:             true,
 	JournalLinkOrphaned:             true,
 }
