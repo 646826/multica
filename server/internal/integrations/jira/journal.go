@@ -48,10 +48,11 @@ const (
 	JournalTransitionUnreachable JournalKind = "transition_unreachable"
 	JournalTransitionRecovered   JournalKind = "transition_recovered"
 	// Outbound creation (FR-9, AD-15).
-	JournalOutboundCreated JournalKind = "outbound_created"
-	JournalCreateRejected  JournalKind = "create_rejected"
-	JournalScopeResumed    JournalKind = "scope_resumed"
-	JournalLinkOrphaned    JournalKind = "link_orphaned"
+	JournalOutboundCreated  JournalKind = "outbound_created"
+	JournalCreateRejected   JournalKind = "create_rejected"
+	JournalLabelTransformed JournalKind = "label_transformed"
+	JournalScopeResumed     JournalKind = "scope_resumed"
+	JournalLinkOrphaned     JournalKind = "link_orphaned"
 )
 
 // journalKinds is the registry; Record refuses kinds outside it.
@@ -73,6 +74,7 @@ var journalKinds = map[JournalKind]bool{
 	JournalTransitionRecovered:      true,
 	JournalOutboundCreated:          true,
 	JournalCreateRejected:           true,
+	JournalLabelTransformed:         true,
 	JournalScopeResumed:             true,
 	JournalLinkOrphaned:             true,
 }

@@ -201,6 +201,11 @@ func (w *Worker) updateIssueOnce(ctx context.Context, conn db.JiraConnection, sm
 		DescriptionMD: CanonicalMarkdown(issue.Description.String),
 		Status:        issue.Status,
 	}
+	if labelRows, lerr := w.Q.ListLabelsByIssue(ctx, db.ListLabelsByIssueParams{IssueID: issue.ID, WorkspaceID: conn.WorkspaceID}); lerr == nil {
+		for _, l := range labelRows {
+			loc.Labels = append(loc.Labels, l.Name)
+		}
+	}
 
 	actions := PlanIssue(PlanInput{
 		Settings:  settings,
@@ -216,6 +221,7 @@ func (w *Worker) updateIssueOnce(ctx context.Context, conn db.JiraConnection, sm
 	outFields := map[string]any{}
 	var outApply []func(*ObservedIssue)
 	var outBreadcrumbs []Action
+	var outLabelsAct *Action
 	newTitle, newDescription := issue.Title, issue.Description
 	for _, act := range actions {
 		switch act.Kind {
@@ -268,6 +274,12 @@ func (w *Worker) updateIssueOnce(ctx context.Context, conn db.JiraConnection, sm
 			})
 		case ActBreadcrumbOut:
 			outBreadcrumbs = append(outBreadcrumbs, act)
+		case ActInLabels:
+			if lerr := w.applyInLabels(ctx, conn, issue.ID, &items, act); lerr != nil {
+				return lerr
+			}
+		case ActOutLabels:
+			outLabelsAct = &act
 		case ActSkip:
 			_ = w.Journal.Record(ctx, conn, cycleID, act.Journal, link.IssueID, link.JiraKey, act.Detail)
 		default:
@@ -276,6 +288,25 @@ func (w *Worker) updateIssueOnce(ctx context.Context, conn db.JiraConnection, sm
 			// those items stay untouched so their appliers see the same
 			// divergence on their cycle.
 		}
+	}
+
+	// Outbound labels fold into the same PUT (FR-22): compute the target Jira
+	// set from the current propagated set plus/minus the planned changes, with
+	// space-to-dash transforms journaled once.
+	if outLabelsAct != nil {
+		targetState := nextLabelState(items.Labels, *outLabelsAct)
+		var jiraLabels []string
+		for _, name := range targetState.Propagated {
+			safe, changed := jiraLabelSafe(name)
+			if changed {
+				_ = w.Journal.Record(ctx, conn, cycleID, JournalLabelTransformed, issue.ID, link.JiraKey, map[string]any{
+					"from": name, "to": safe,
+				})
+			}
+			jiraLabels = append(jiraLabels, safe)
+		}
+		outFields["labels"] = jiraLabels
+		items.Labels = targetState
 	}
 
 	// Coalesced outbound field PUT (FR-12 outbound / FR-20): at most one write
