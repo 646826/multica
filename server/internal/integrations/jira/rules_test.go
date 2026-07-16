@@ -256,3 +256,103 @@ func TestMentionBridgeToggleOff(t *testing.T) {
 		t.Fatalf("toggle off must not wake agents: %d", n)
 	}
 }
+
+// Story 6.3 — UJ-2 round-trip acceptance: Jira label → agent works → results
+// land back in Jira, zero Multica-side human actions.
+
+func TestRoundTripLabelToAgentToJira(t *testing.T) {
+	f := newFakeJira(t)
+	now := time.Now().UTC()
+	labels := atomic.Value{}
+	labels.Store(`[]`)
+	var postedComments atomic.Int64
+	var transitions atomic.Int64
+	f.mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"issues":[{"id":"id-GAME-99","key":"GAME-99","fields":{
+			"summary":"Crash on iOS","description":{"type":"doc","version":1,"content":[]},
+			"status":{"id":"100","name":"To Do","statusCategory":{"key":"new"}},
+			"labels":%s,"updated":%q}}],"isLast":true}`, labels.Load(), now.Format(jiraTimeLayout))
+	})
+	f.mux.HandleFunc("/rest/api/3/issue/id-GAME-99/comment", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			postedComments.Add(1)
+			w.Write([]byte(`{"id":"jc-agent"}`))
+			return
+		}
+		w.Write([]byte(`{"comments":[],"startAt":0,"maxResults":100,"total":0}`))
+	})
+	f.mux.HandleFunc("/rest/api/3/issue/id-GAME-99/transitions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			transitions.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.Write([]byte(`{"transitions":[{"id":"t-rev","to":{"id":"300","name":"In Review"}}]}`))
+	})
+	w, conn, q := importFixture(t, f)
+	ctx := context.Background()
+	agentID := makeTestAgent(t, w, conn.WorkspaceID, "Fixer")
+	conn = tagRuleConn(t, q, conn, fmt.Sprintf(`[{"match_type":"label","match_value":"agent:fixer","agent_id":%q}]`, uuidStr(agentID)))
+	// Map in_review → 300 for the outbound transition.
+	conn, _ = q.UpdateJiraConnectionConfig(ctx, db.UpdateJiraConnectionConfigParams{
+		ID: conn.ID, Enabled: true, Mode: conn.Mode, LeadingSystem: conn.LeadingSystem,
+		CommentsEnabled: true, LabelsEnabled: true, CustomFieldsEnabled: true,
+		CreateFromJira: true, CreateToJira: false, JqlFilter: "", LabelPrefix: "",
+		MentionBridgeEnabled: true, OutboundIssueType: "Task",
+		StatusMap: []byte(`{"in":{"100":"todo","300":"in_review"},"out":{"todo":"100","in_review":"300"}}`),
+		FieldMap:  []byte(`[]`), TagRules: conn.TagRules, CycleIntervalSeconds: 45,
+	})
+
+	rewind := func() db.JiraConnection {
+		c, _ := q.GetJiraConnectionByID(ctx, conn.ID)
+		_ = q.UpdateJiraConnectionCursors(ctx, db.UpdateJiraConnectionCursorsParams{
+			ID: conn.ID, JiraCursor: pgtype.Timestamptz{Time: now.Add(-time.Hour), Valid: true},
+			LocalCursor: pgtype.Timestamptz{Time: now.Add(-time.Hour), Valid: true}})
+		c, _ = q.GetJiraConnectionByID(ctx, conn.ID)
+		return c
+	}
+
+	// 1) Import (no label) — nothing happens.
+	if _, err := w.runCycle(ctx, conn); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	link, _ := q.GetJiraLinkByJiraIssueID(ctx, db.GetJiraLinkByJiraIssueIDParams{ConnectionID: conn.ID, JiraIssueID: "id-GAME-99"})
+
+	// 2) The Jira label appears → agent assigned + dispatched (≤1 cycle).
+	labels.Store(`["agent:fixer"]`)
+	if _, err := w.runCycle(ctx, rewind()); err != nil {
+		t.Fatalf("tag cycle: %v", err)
+	}
+	issue, _ := q.GetIssue(ctx, link.IssueID)
+	if issue.AssigneeType.String != "agent" || issue.AssigneeID != agentID {
+		t.Fatalf("label must summon the agent: %+v", issue)
+	}
+	if n := agentTaskCount(t, w, conn.WorkspaceID); n != 1 {
+		t.Fatalf("agent run must be enqueued: %d", n)
+	}
+
+	// 3) The agent does its work (simulated): comments + moves to in_review.
+	if _, err := q.CreateComment(ctx, db.CreateCommentParams{
+		IssueID: link.IssueID, WorkspaceID: conn.WorkspaceID,
+		AuthorType: "agent", AuthorID: agentID, Content: "Fixed the touch handler; pushed a branch.", Type: "comment",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{ID: link.IssueID, Status: "in_review", WorkspaceID: conn.WorkspaceID}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 4) Next cycle pushes the agent's comment + transition to Jira (≤1 cycle).
+	if _, err := w.runCycle(ctx, rewind()); err != nil {
+		t.Fatalf("round-trip cycle: %v", err)
+	}
+	if postedComments.Load() != 1 {
+		t.Fatalf("agent comment must appear in Jira exactly once, got %d", postedComments.Load())
+	}
+	if transitions.Load() != 1 {
+		t.Fatalf("agent status move must transition Jira exactly once, got %d", transitions.Load())
+	}
+	// No Multica-side human ever touched this issue: the whole loop ran on
+	// the Jira label alone. (Assertion is structural — the test performed no
+	// member action.)
+}
