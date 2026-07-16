@@ -304,3 +304,108 @@ func (c *Client) MyPermissions(ctx context.Context, projectKey string, permissio
 	}
 	return out, nil
 }
+
+// --- Observation (Epic 2) ---
+
+// RemoteIssue is one raw Jira-side issue observation: side-local values only
+// (AD-5 raw-source detection); mapping happens at plan time.
+type RemoteIssue struct {
+	ID             string
+	Key            string
+	Summary        string
+	DescriptionADF json.RawMessage
+	StatusID       string
+	StatusName     string
+	Labels         []string
+	Fields         map[string]json.RawMessage
+	Updated        time.Time
+}
+
+// jiraTimeLayout is Jira Cloud's issue timestamp format.
+const jiraTimeLayout = "2006-01-02T15:04:05.000-0700"
+
+// SearchUpdated pages through /rest/api/3/search/jql for the project's issues
+// changed within the last sinceMinutes (0 = no time bound, the first-enable
+// import scan). The JQL window is RELATIVE ("-Nm"): JQL datetime literals are
+// interpreted in the service account's timezone and truncate to minutes, so a
+// relative bound is the only timezone-proof shape; callers re-filter with the
+// precise RFC3339 timestamps carried on each result. Results are ordered by
+// updated ascending; pageCap bounds one observation pass (excess reported via
+// truncated=true, never silently dropped).
+func (c *Client) SearchUpdated(ctx context.Context, projectKey, extraJQL string, sinceMinutes int, fieldIDs []string, pageCap int) (issues []RemoteIssue, truncated bool, err error) {
+	jql := fmt.Sprintf("project = %q", projectKey)
+	if extraJQL = strings.TrimSpace(extraJQL); extraJQL != "" {
+		jql += " AND (" + extraJQL + ")"
+	}
+	if sinceMinutes > 0 {
+		jql += fmt.Sprintf(" AND updated >= \"-%dm\"", sinceMinutes)
+	}
+	jql += " ORDER BY updated ASC"
+
+	fields := append([]string{"summary", "description", "status", "labels", "updated"}, fieldIDs...)
+
+	nextPageToken := ""
+	for {
+		q := url.Values{
+			"jql":        {jql},
+			"fields":     {strings.Join(fields, ",")},
+			"maxResults": {"100"},
+		}
+		if nextPageToken != "" {
+			q.Set("nextPageToken", nextPageToken)
+		}
+		var page struct {
+			Issues []struct {
+				ID     string                     `json:"id"`
+				Key    string                     `json:"key"`
+				Fields map[string]json.RawMessage `json:"fields"`
+			} `json:"issues"`
+			NextPageToken string `json:"nextPageToken"`
+			IsLast        bool   `json:"isLast"`
+		}
+		if err := c.do(ctx, http.MethodGet, "/rest/api/3/search/jql", q, nil, &page); err != nil {
+			return nil, false, err
+		}
+		for _, it := range page.Issues {
+			ri := RemoteIssue{ID: it.ID, Key: it.Key, Fields: map[string]json.RawMessage{}}
+			if v, ok := it.Fields["summary"]; ok {
+				_ = json.Unmarshal(v, &ri.Summary)
+			}
+			if v, ok := it.Fields["description"]; ok && string(v) != "null" {
+				ri.DescriptionADF = v
+			}
+			if v, ok := it.Fields["status"]; ok {
+				var st struct {
+					ID   string `json:"id"`
+					Name string `json:"name"`
+				}
+				_ = json.Unmarshal(v, &st)
+				ri.StatusID, ri.StatusName = st.ID, st.Name
+			}
+			if v, ok := it.Fields["labels"]; ok {
+				_ = json.Unmarshal(v, &ri.Labels)
+			}
+			if v, ok := it.Fields["updated"]; ok {
+				var s string
+				if json.Unmarshal(v, &s) == nil {
+					if ts, perr := time.Parse(jiraTimeLayout, s); perr == nil {
+						ri.Updated = ts
+					}
+				}
+			}
+			for _, fid := range fieldIDs {
+				if v, ok := it.Fields[fid]; ok && string(v) != "null" {
+					ri.Fields[fid] = v
+				}
+			}
+			issues = append(issues, ri)
+			if len(issues) >= pageCap {
+				return issues, true, nil
+			}
+		}
+		if page.IsLast || page.NextPageToken == "" {
+			return issues, false, nil
+		}
+		nextPageToken = page.NextPageToken
+	}
+}
