@@ -126,3 +126,71 @@ WHERE id IN (
 -- Connection-delete cleanup (application-code cascade, AD-3).
 DELETE FROM jira_journal
 WHERE connection_id = $1;
+
+-- =====================
+-- Jira Link
+-- =====================
+
+-- name: CreateJiraLink :one
+INSERT INTO jira_link (
+    connection_id, workspace_id, issue_id, jira_issue_id, jira_key, state, items
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING *;
+
+-- name: GetJiraLinkByJiraIssueID :one
+SELECT * FROM jira_link
+WHERE connection_id = $1 AND jira_issue_id = $2;
+
+-- name: GetJiraLinkByIssueID :one
+SELECT * FROM jira_link
+WHERE issue_id = $1;
+
+-- name: UpdateJiraLinkItems :exec
+-- Snapshot refresh after an apply (same-tx signature-forwarding, AD-5).
+UPDATE jira_link
+SET items = $2, jira_key = $3, last_seen_at = now(), updated_at = now()
+WHERE id = $1;
+
+-- name: SetJiraLinkState :exec
+UPDATE jira_link
+SET state = $2, updated_at = now()
+WHERE id = $1;
+
+-- name: FinalizeJiraLink :exec
+-- Intent-first creation (AD-15): pending -> ok with the remote identity.
+UPDATE jira_link
+SET state = 'ok', jira_issue_id = $2, jira_key = $3, items = $4, updated_at = now()
+WHERE id = $1;
+
+-- name: MarkJiraLinkDirty :exec
+UPDATE jira_link
+SET dirty = true, retry_count = retry_count + 1, retry_at = $2, updated_at = now()
+WHERE id = $1;
+
+-- name: ClearJiraLinkDirty :exec
+UPDATE jira_link
+SET dirty = false, retry_count = 0, retry_at = NULL, updated_at = now()
+WHERE id = $1;
+
+-- name: ListDueDirtyJiraLinks :many
+SELECT * FROM jira_link
+WHERE connection_id = $1 AND dirty = true AND (retry_at IS NULL OR retry_at <= now())
+ORDER BY updated_at ASC
+LIMIT $2;
+
+-- name: ListJiraLinksUnseenSince :many
+-- Orphan/move sweep input (FR-14): links not observed for a prolonged window.
+SELECT * FROM jira_link
+WHERE connection_id = $1 AND state = 'ok' AND (last_seen_at IS NULL OR last_seen_at < $2)
+ORDER BY last_seen_at ASC NULLS FIRST
+LIMIT $3;
+
+-- name: TouchJiraLinksSeen :exec
+UPDATE jira_link
+SET last_seen_at = now()
+WHERE connection_id = $1 AND jira_issue_id = ANY($2::text[]);
+
+-- name: DeleteJiraLinksByConnection :execrows
+-- Connection-delete cleanup (application-code cascade, AD-3).
+DELETE FROM jira_link
+WHERE connection_id = $1;

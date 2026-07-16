@@ -11,6 +11,17 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const clearJiraLinkDirty = `-- name: ClearJiraLinkDirty :exec
+UPDATE jira_link
+SET dirty = false, retry_count = 0, retry_at = NULL, updated_at = now()
+WHERE id = $1
+`
+
+func (q *Queries) ClearJiraLinkDirty(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, clearJiraLinkDirty, id)
+	return err
+}
+
 const countJiraJournalByKindSince = `-- name: CountJiraJournalByKindSince :many
 SELECT kind, COUNT(*) AS count FROM jira_journal
 WHERE connection_id = $1 AND created_at >= $2
@@ -151,6 +162,57 @@ func (q *Queries) CreateJiraConnection(ctx context.Context, arg CreateJiraConnec
 	return i, err
 }
 
+const createJiraLink = `-- name: CreateJiraLink :one
+
+INSERT INTO jira_link (
+    connection_id, workspace_id, issue_id, jira_issue_id, jira_key, state, items
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, connection_id, workspace_id, issue_id, jira_issue_id, jira_key, state, items, dirty, retry_at, retry_count, last_seen_at, created_at, updated_at
+`
+
+type CreateJiraLinkParams struct {
+	ConnectionID pgtype.UUID `json:"connection_id"`
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	IssueID      pgtype.UUID `json:"issue_id"`
+	JiraIssueID  string      `json:"jira_issue_id"`
+	JiraKey      string      `json:"jira_key"`
+	State        string      `json:"state"`
+	Items        []byte      `json:"items"`
+}
+
+// =====================
+// Jira Link
+// =====================
+func (q *Queries) CreateJiraLink(ctx context.Context, arg CreateJiraLinkParams) (JiraLink, error) {
+	row := q.db.QueryRow(ctx, createJiraLink,
+		arg.ConnectionID,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.JiraIssueID,
+		arg.JiraKey,
+		arg.State,
+		arg.Items,
+	)
+	var i JiraLink
+	err := row.Scan(
+		&i.ID,
+		&i.ConnectionID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.JiraIssueID,
+		&i.JiraKey,
+		&i.State,
+		&i.Items,
+		&i.Dirty,
+		&i.RetryAt,
+		&i.RetryCount,
+		&i.LastSeenAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const deleteJiraConnection = `-- name: DeleteJiraConnection :exec
 DELETE FROM jira_connection
 WHERE id = $1
@@ -173,6 +235,44 @@ func (q *Queries) DeleteJiraJournalByConnection(ctx context.Context, connectionI
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const deleteJiraLinksByConnection = `-- name: DeleteJiraLinksByConnection :execrows
+DELETE FROM jira_link
+WHERE connection_id = $1
+`
+
+// Connection-delete cleanup (application-code cascade, AD-3).
+func (q *Queries) DeleteJiraLinksByConnection(ctx context.Context, connectionID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteJiraLinksByConnection, connectionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const finalizeJiraLink = `-- name: FinalizeJiraLink :exec
+UPDATE jira_link
+SET state = 'ok', jira_issue_id = $2, jira_key = $3, items = $4, updated_at = now()
+WHERE id = $1
+`
+
+type FinalizeJiraLinkParams struct {
+	ID          pgtype.UUID `json:"id"`
+	JiraIssueID string      `json:"jira_issue_id"`
+	JiraKey     string      `json:"jira_key"`
+	Items       []byte      `json:"items"`
+}
+
+// Intent-first creation (AD-15): pending -> ok with the remote identity.
+func (q *Queries) FinalizeJiraLink(ctx context.Context, arg FinalizeJiraLinkParams) error {
+	_, err := q.db.Exec(ctx, finalizeJiraLink,
+		arg.ID,
+		arg.JiraIssueID,
+		arg.JiraKey,
+		arg.Items,
+	)
+	return err
 }
 
 const getJiraConnectionByID = `-- name: GetJiraConnectionByID :one
@@ -315,6 +415,65 @@ func (q *Queries) GetJiraConnectionByWorkspace(ctx context.Context, workspaceID 
 	return i, err
 }
 
+const getJiraLinkByIssueID = `-- name: GetJiraLinkByIssueID :one
+SELECT id, connection_id, workspace_id, issue_id, jira_issue_id, jira_key, state, items, dirty, retry_at, retry_count, last_seen_at, created_at, updated_at FROM jira_link
+WHERE issue_id = $1
+`
+
+func (q *Queries) GetJiraLinkByIssueID(ctx context.Context, issueID pgtype.UUID) (JiraLink, error) {
+	row := q.db.QueryRow(ctx, getJiraLinkByIssueID, issueID)
+	var i JiraLink
+	err := row.Scan(
+		&i.ID,
+		&i.ConnectionID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.JiraIssueID,
+		&i.JiraKey,
+		&i.State,
+		&i.Items,
+		&i.Dirty,
+		&i.RetryAt,
+		&i.RetryCount,
+		&i.LastSeenAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getJiraLinkByJiraIssueID = `-- name: GetJiraLinkByJiraIssueID :one
+SELECT id, connection_id, workspace_id, issue_id, jira_issue_id, jira_key, state, items, dirty, retry_at, retry_count, last_seen_at, created_at, updated_at FROM jira_link
+WHERE connection_id = $1 AND jira_issue_id = $2
+`
+
+type GetJiraLinkByJiraIssueIDParams struct {
+	ConnectionID pgtype.UUID `json:"connection_id"`
+	JiraIssueID  string      `json:"jira_issue_id"`
+}
+
+func (q *Queries) GetJiraLinkByJiraIssueID(ctx context.Context, arg GetJiraLinkByJiraIssueIDParams) (JiraLink, error) {
+	row := q.db.QueryRow(ctx, getJiraLinkByJiraIssueID, arg.ConnectionID, arg.JiraIssueID)
+	var i JiraLink
+	err := row.Scan(
+		&i.ID,
+		&i.ConnectionID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.JiraIssueID,
+		&i.JiraKey,
+		&i.State,
+		&i.Items,
+		&i.Dirty,
+		&i.RetryAt,
+		&i.RetryCount,
+		&i.LastSeenAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const insertJiraJournal = `-- name: InsertJiraJournal :one
 
 INSERT INTO jira_journal (
@@ -361,6 +520,53 @@ func (q *Queries) InsertJiraJournal(ctx context.Context, arg InsertJiraJournalPa
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const listDueDirtyJiraLinks = `-- name: ListDueDirtyJiraLinks :many
+SELECT id, connection_id, workspace_id, issue_id, jira_issue_id, jira_key, state, items, dirty, retry_at, retry_count, last_seen_at, created_at, updated_at FROM jira_link
+WHERE connection_id = $1 AND dirty = true AND (retry_at IS NULL OR retry_at <= now())
+ORDER BY updated_at ASC
+LIMIT $2
+`
+
+type ListDueDirtyJiraLinksParams struct {
+	ConnectionID pgtype.UUID `json:"connection_id"`
+	Limit        int32       `json:"limit"`
+}
+
+func (q *Queries) ListDueDirtyJiraLinks(ctx context.Context, arg ListDueDirtyJiraLinksParams) ([]JiraLink, error) {
+	rows, err := q.db.Query(ctx, listDueDirtyJiraLinks, arg.ConnectionID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []JiraLink{}
+	for rows.Next() {
+		var i JiraLink
+		if err := rows.Scan(
+			&i.ID,
+			&i.ConnectionID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.JiraIssueID,
+			&i.JiraKey,
+			&i.State,
+			&i.Items,
+			&i.Dirty,
+			&i.RetryAt,
+			&i.RetryCount,
+			&i.LastSeenAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listEnabledJiraConnections = `-- name: ListEnabledJiraConnections :many
@@ -463,6 +669,71 @@ func (q *Queries) ListJiraJournalRecent(ctx context.Context, arg ListJiraJournal
 	return items, nil
 }
 
+const listJiraLinksUnseenSince = `-- name: ListJiraLinksUnseenSince :many
+SELECT id, connection_id, workspace_id, issue_id, jira_issue_id, jira_key, state, items, dirty, retry_at, retry_count, last_seen_at, created_at, updated_at FROM jira_link
+WHERE connection_id = $1 AND state = 'ok' AND (last_seen_at IS NULL OR last_seen_at < $2)
+ORDER BY last_seen_at ASC NULLS FIRST
+LIMIT $3
+`
+
+type ListJiraLinksUnseenSinceParams struct {
+	ConnectionID pgtype.UUID        `json:"connection_id"`
+	LastSeenAt   pgtype.Timestamptz `json:"last_seen_at"`
+	Limit        int32              `json:"limit"`
+}
+
+// Orphan/move sweep input (FR-14): links not observed for a prolonged window.
+func (q *Queries) ListJiraLinksUnseenSince(ctx context.Context, arg ListJiraLinksUnseenSinceParams) ([]JiraLink, error) {
+	rows, err := q.db.Query(ctx, listJiraLinksUnseenSince, arg.ConnectionID, arg.LastSeenAt, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []JiraLink{}
+	for rows.Next() {
+		var i JiraLink
+		if err := rows.Scan(
+			&i.ID,
+			&i.ConnectionID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.JiraIssueID,
+			&i.JiraKey,
+			&i.State,
+			&i.Items,
+			&i.Dirty,
+			&i.RetryAt,
+			&i.RetryCount,
+			&i.LastSeenAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markJiraLinkDirty = `-- name: MarkJiraLinkDirty :exec
+UPDATE jira_link
+SET dirty = true, retry_count = retry_count + 1, retry_at = $2, updated_at = now()
+WHERE id = $1
+`
+
+type MarkJiraLinkDirtyParams struct {
+	ID      pgtype.UUID        `json:"id"`
+	RetryAt pgtype.Timestamptz `json:"retry_at"`
+}
+
+func (q *Queries) MarkJiraLinkDirty(ctx context.Context, arg MarkJiraLinkDirtyParams) error {
+	_, err := q.db.Exec(ctx, markJiraLinkDirty, arg.ID, arg.RetryAt)
+	return err
+}
+
 const pruneJiraJournalByAge = `-- name: PruneJiraJournalByAge :execrows
 DELETE FROM jira_journal
 WHERE connection_id = $1 AND created_at < $2
@@ -503,6 +774,38 @@ func (q *Queries) PruneJiraJournalByCount(ctx context.Context, arg PruneJiraJour
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const setJiraLinkState = `-- name: SetJiraLinkState :exec
+UPDATE jira_link
+SET state = $2, updated_at = now()
+WHERE id = $1
+`
+
+type SetJiraLinkStateParams struct {
+	ID    pgtype.UUID `json:"id"`
+	State string      `json:"state"`
+}
+
+func (q *Queries) SetJiraLinkState(ctx context.Context, arg SetJiraLinkStateParams) error {
+	_, err := q.db.Exec(ctx, setJiraLinkState, arg.ID, arg.State)
+	return err
+}
+
+const touchJiraLinksSeen = `-- name: TouchJiraLinksSeen :exec
+UPDATE jira_link
+SET last_seen_at = now()
+WHERE connection_id = $1 AND jira_issue_id = ANY($2::text[])
+`
+
+type TouchJiraLinksSeenParams struct {
+	ConnectionID pgtype.UUID `json:"connection_id"`
+	Column2      []string    `json:"column_2"`
+}
+
+func (q *Queries) TouchJiraLinksSeen(ctx context.Context, arg TouchJiraLinksSeenParams) error {
+	_, err := q.db.Exec(ctx, touchJiraLinksSeen, arg.ConnectionID, arg.Column2)
+	return err
 }
 
 const updateJiraConnectionConfig = `-- name: UpdateJiraConnectionConfig :one
@@ -654,5 +957,23 @@ type UpdateJiraConnectionTokenParams struct {
 // Token rotation path; write-only (the token is never read back via API).
 func (q *Queries) UpdateJiraConnectionToken(ctx context.Context, arg UpdateJiraConnectionTokenParams) error {
 	_, err := q.db.Exec(ctx, updateJiraConnectionToken, arg.ID, arg.Email, arg.TokenEncrypted)
+	return err
+}
+
+const updateJiraLinkItems = `-- name: UpdateJiraLinkItems :exec
+UPDATE jira_link
+SET items = $2, jira_key = $3, last_seen_at = now(), updated_at = now()
+WHERE id = $1
+`
+
+type UpdateJiraLinkItemsParams struct {
+	ID      pgtype.UUID `json:"id"`
+	Items   []byte      `json:"items"`
+	JiraKey string      `json:"jira_key"`
+}
+
+// Snapshot refresh after an apply (same-tx signature-forwarding, AD-5).
+func (q *Queries) UpdateJiraLinkItems(ctx context.Context, arg UpdateJiraLinkItemsParams) error {
+	_, err := q.db.Exec(ctx, updateJiraLinkItems, arg.ID, arg.Items, arg.JiraKey)
 	return err
 }

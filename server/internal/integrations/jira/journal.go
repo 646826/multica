@@ -28,13 +28,21 @@ const (
 	// Cycle lifecycle.
 	JournalCycleError     JournalKind = "cycle_error"
 	JournalCycleRecovered JournalKind = "cycle_recovered"
+	// Observation.
+	JournalObserveTruncated JournalKind = "observe_truncated"
+	// Policy skips (planner-emitted, SM-5 classes).
+	JournalStatusUnmapped    JournalKind = "status_unmapped"
+	JournalInboundSuppressed JournalKind = "inbound_suppressed"
 )
 
 // journalKinds is the registry; Record refuses kinds outside it.
 var journalKinds = map[JournalKind]bool{
-	JournalConfigChanged:  true,
-	JournalCycleError:     true,
-	JournalCycleRecovered: true,
+	JournalConfigChanged:     true,
+	JournalCycleError:        true,
+	JournalCycleRecovered:    true,
+	JournalObserveTruncated:  true,
+	JournalStatusUnmapped:    true,
+	JournalInboundSuppressed: true,
 }
 
 // Journal retention bounds (operational envelope): whichever prunes more.

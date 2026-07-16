@@ -690,6 +690,23 @@ type JiraJournal struct {
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 }
 
+type JiraLink struct {
+	ID           pgtype.UUID        `json:"id"`
+	ConnectionID pgtype.UUID        `json:"connection_id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	IssueID      pgtype.UUID        `json:"issue_id"`
+	JiraIssueID  string             `json:"jira_issue_id"`
+	JiraKey      string             `json:"jira_key"`
+	State        string             `json:"state"`
+	Items        []byte             `json:"items"`
+	Dirty        bool               `json:"dirty"`
+	RetryAt      pgtype.Timestamptz `json:"retry_at"`
+	RetryCount   int32              `json:"retry_count"`
+	LastSeenAt   pgtype.Timestamptz `json:"last_seen_at"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+}
+
 type LarkBindingToken struct {
 	TokenHash      string             `json:"token_hash"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`

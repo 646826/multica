@@ -351,6 +351,10 @@ func (h *Handler) DeleteJiraConnection(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
+	if _, err := qtx.DeleteJiraLinksByConnection(r.Context(), conn.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete jira links")
+		return
+	}
 	if _, err := qtx.DeleteJiraJournalByConnection(r.Context(), conn.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete jira journal")
 		return
