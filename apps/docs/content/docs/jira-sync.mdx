@@ -1,0 +1,72 @@
+---
+title: Jira Sync
+description: Connect a workspace to one Jira Cloud project — issues mirror into Multica, agents pick up tagged tickets, and their replies and status moves land back in Jira.
+---
+
+Multica's native Jira sync binds one workspace to one Jira Cloud project. Issues in scope appear as linked Multica issues that agents can own and work on; comments, statuses, labels and mapped custom fields flow between the two systems according to the connection's **sync mode** and **leading system**.
+
+## Setup
+
+1. Set `MULTICA_JIRA_SECRET_KEY` on the server (base64, 32 bytes) and restart. Tokens are encrypted at rest with this key.
+2. In **Settings → Integrations → Jira**, enter your Jira site URL (`https://your-site.atlassian.net`), a **dedicated service account** email, and its API token. Scoped tokens (which require the `api.atlassian.com` gateway) are not supported — use a regular API token. Jira API tokens expire after at most one year; the connection's health chip shows `auth_expired` when rotation is due.
+3. Validate, pick the project, choose a sync mode, and enable. A status mapping is suggested from the project's live workflow (by name, then by status category) and can be edited any time — mapping changes apply prospectively and never rewrite already-synced state.
+
+The service account must hold `BROWSE_PROJECTS`, `EDIT_ISSUES`, `ADD_COMMENTS` and `TRANSITION_ISSUES` on the project, and must not be used interactively by humans — comment attribution and echo protection key off its identity.
+
+## Sync modes
+
+| Mode | Issues & fields | Status | Comments | Conflict winner |
+| --- | --- | --- | --- | --- |
+| **Mirror** | Jira → Multica | Jira → Multica | Jira → Multica | Jira (read-only: zero Jira writes) |
+| **Jira leads** (default) | Jira → Multica | both ways | both ways | Jira |
+| **Multica leads** | Multica → Jira | Multica → Jira | both ways | Multica |
+| **Two-way** | both ways | both ways | both ways | chosen explicitly |
+
+When a value diverged on both sides, the leading system wins and the overwritten side receives exactly one system-comment breadcrumb quoting the discarded value — nothing is lost silently. Comments are append-only: edits and deletions do not propagate.
+
+## Rich-text fidelity
+
+Descriptions and comments convert between Jira's ADF and Multica's Markdown through a fixed profile. Inside the profile the round-trip is lossless; outside it content degrades to readable text (never dropped) and the degradation is journaled once.
+
+| Construct | Jira → Multica | Multica → Jira |
+| --- | --- | --- |
+| Paragraphs, line breaks | ✅ | ✅ |
+| Headings 1–6 | ✅ | ✅ |
+| Bold / italic / inline code / strikethrough | ✅ | ✅ (no strikethrough outbound) |
+| Links | ✅ | ✅ |
+| Bullet / ordered lists | ✅ | ✅ |
+| Code blocks (with language) | ✅ | ✅ |
+| Jira user mentions | rendered as plain names (never wake agents) | outbound mentions render as plain `@Name` text |
+| Emoji | short-name text | plain text |
+| Media / attachments | `[attachment]` placeholder | not sent |
+| Tables, panels, other ADF nodes | readable text + `[table]`-style marker | plain text |
+
+## Labels
+
+Label sync manages only labels it has itself propagated (tracked per link) plus, when a **label prefix** is configured, labels matching that prefix. Labels created natively on the receiving side are never removed by sync. Jira labels cannot contain spaces: outbound labels have spaces replaced with `-` (journaled once per label).
+
+## Custom fields
+
+Custom fields sync through explicit mapping rows (Jira field ↔ Multica issue property), validated against this type matrix at save time:
+
+| Jira field type | Multica property type |
+| --- | --- |
+| string / text | `text` |
+| number | `number` |
+| single-select / option / priority | `select` (options matched by name) |
+| multi-select / labels-shaped array | `multi_select` (options matched by name) |
+| date / datetime | `date` |
+| boolean | `checkbox` |
+| url | `url` |
+
+Unmatched option names or invalid values skip that field for that issue (visible in Health) and never block the rest of the issue's sync. Sync never creates, renames, or deletes field definitions on either side.
+
+## Agent tagging
+
+Tag rules map a Jira signal to a workspace agent: a label (for example `agent:fixer`) or a Jira assignee. When the signal appears on an in-scope issue, the linked Multica issue is assigned to that agent in an active status and the agent picks it up through Multica's normal dispatch. Rules are edge-triggered — a human unassigning the agent is respected until the Jira signal itself changes again — and rule signals disappearing never cancel running work. With the **mention bridge** enabled, writing `@AgentName` in a Jira comment wakes the matching agent; its reply lands back in the Jira thread under the service account with an attribution line.
+
+## Operational notes
+
+- Transport is a reconciliation loop (default every 45 seconds, configurable 30–300s): correctness never depends on webhooks. Pausing the connection stops sync within one cycle; re-enabling resumes from the cursor with no duplicates.
+- Deletions never propagate. Deleting the connection removes sync bookkeeping only; reconnecting later starts fresh and does not re-link previously mirrored issues.
+- Health (in Settings) answers "why didn't X sync": unmapped statuses, restricted comments (never mirrored — fail-closed), skipped field values, guarded assignments, rate-limit pauses, and orphaned links are all counted there.

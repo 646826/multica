@@ -3,6 +3,7 @@ package jira
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -256,4 +257,152 @@ func TextToADF(text string) json.RawMessage {
 		return json.RawMessage(`{"type":"doc","version":1,"content":[]}`)
 	}
 	return raw
+}
+
+// --- Markdown → ADF (profile writer, Story 3.4) ---
+
+// MarkdownToADF renders profile Markdown (headings, bullet/ordered lists,
+// code fences, bold/italic/code/link inline, paragraphs) into ADF. Anything
+// outside the profile stays readable plain text — the writer never fails.
+func MarkdownToADF(md string) json.RawMessage {
+	lines := strings.Split(CanonicalMarkdown(md), "\n")
+	var blocks []map[string]any
+	var para []string
+
+	flushPara := func() {
+		if len(para) == 0 {
+			return
+		}
+		var inner []any
+		for i, line := range para {
+			inner = append(inner, inlineToADF(line)...)
+			if i < len(para)-1 {
+				inner = append(inner, map[string]any{"type": "hardBreak"})
+			}
+		}
+		blocks = append(blocks, map[string]any{"type": "paragraph", "content": inner})
+		para = nil
+	}
+
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case trimmed == "":
+			flushPara()
+		case strings.HasPrefix(trimmed, "```"):
+			flushPara()
+			lang := strings.TrimPrefix(trimmed, "```")
+			var code []string
+			for i++; i < len(lines) && !strings.HasPrefix(strings.TrimSpace(lines[i]), "```"); i++ {
+				code = append(code, lines[i])
+			}
+			block := map[string]any{"type": "codeBlock", "content": []any{
+				map[string]any{"type": "text", "text": strings.Join(code, "\n")},
+			}}
+			if lang != "" {
+				block["attrs"] = map[string]any{"language": lang}
+			}
+			blocks = append(blocks, block)
+		case strings.HasPrefix(trimmed, "#"):
+			flushPara()
+			level := 0
+			for level < len(trimmed) && trimmed[level] == '#' && level < 6 {
+				level++
+			}
+			text := strings.TrimSpace(trimmed[level:])
+			blocks = append(blocks, map[string]any{
+				"type": "heading", "attrs": map[string]any{"level": level},
+				"content": inlineToADF(text),
+			})
+		case strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* "):
+			flushPara()
+			var items []any
+			for ; i < len(lines); i++ {
+				t := strings.TrimSpace(lines[i])
+				if !strings.HasPrefix(t, "- ") && !strings.HasPrefix(t, "* ") {
+					i--
+					break
+				}
+				items = append(items, listItem(strings.TrimSpace(t[2:])))
+			}
+			blocks = append(blocks, map[string]any{"type": "bulletList", "content": items})
+		case orderedRe.MatchString(trimmed):
+			flushPara()
+			var items []any
+			for ; i < len(lines); i++ {
+				t := strings.TrimSpace(lines[i])
+				m := orderedRe.FindStringSubmatch(t)
+				if m == nil {
+					i--
+					break
+				}
+				items = append(items, listItem(m[2]))
+			}
+			blocks = append(blocks, map[string]any{"type": "orderedList", "content": items})
+		default:
+			para = append(para, line)
+		}
+	}
+	flushPara()
+	if len(blocks) == 0 {
+		blocks = append(blocks, map[string]any{"type": "paragraph", "content": []any{
+			map[string]any{"type": "text", "text": " "},
+		}})
+	}
+	raw, err := json.Marshal(map[string]any{"type": "doc", "version": 1, "content": blocks})
+	if err != nil {
+		return TextToADF(md)
+	}
+	return raw
+}
+
+var orderedRe = regexp.MustCompile(`^(\d+)\.\s+(.*)$`)
+
+func listItem(text string) map[string]any {
+	return map[string]any{"type": "listItem", "content": []any{
+		map[string]any{"type": "paragraph", "content": inlineToADF(text)},
+	}}
+}
+
+// inlineRe matches the profile's inline constructs in one pass, leftmost.
+var inlineRe = regexp.MustCompile("(\\*\\*[^*]+\\*\\*|\\*[^*]+\\*|`[^`]+`|\\[[^\\]]+\\]\\([^)]+\\))")
+
+// inlineToADF renders one line's inline marks (bold/em/code/link).
+func inlineToADF(text string) []any {
+	var out []any
+	rest := text
+	for rest != "" {
+		loc := inlineRe.FindStringIndex(rest)
+		if loc == nil {
+			out = append(out, map[string]any{"type": "text", "text": rest})
+			break
+		}
+		if loc[0] > 0 {
+			out = append(out, map[string]any{"type": "text", "text": rest[:loc[0]]})
+		}
+		tok := rest[loc[0]:loc[1]]
+		switch {
+		case strings.HasPrefix(tok, "**"):
+			out = append(out, map[string]any{"type": "text", "text": strings.Trim(tok, "*"),
+				"marks": []any{map[string]any{"type": "strong"}}})
+		case strings.HasPrefix(tok, "*"):
+			out = append(out, map[string]any{"type": "text", "text": strings.Trim(tok, "*"),
+				"marks": []any{map[string]any{"type": "em"}}})
+		case strings.HasPrefix(tok, "`"):
+			out = append(out, map[string]any{"type": "text", "text": strings.Trim(tok, "`"),
+				"marks": []any{map[string]any{"type": "code"}}})
+		default: // [text](url)
+			close := strings.Index(tok, "](")
+			label := tok[1:close]
+			href := tok[close+2 : len(tok)-1]
+			out = append(out, map[string]any{"type": "text", "text": label,
+				"marks": []any{map[string]any{"type": "link", "attrs": map[string]any{"href": href}}}})
+		}
+		rest = rest[loc[1]:]
+	}
+	if len(out) == 0 {
+		out = append(out, map[string]any{"type": "text", "text": " "})
+	}
+	return out
 }

@@ -69,7 +69,7 @@ func (w *Worker) syncOutboundComments(ctx context.Context, conn db.JiraConnectio
 
 		attribution := w.commentAttribution(ctx, conn, row.AuthorType, row.AuthorID)
 		body := fmt.Sprintf("%s\n\n%s\n\n[%s]", attribution, row.Content, marker)
-		jiraID, perr := client.AddComment(ctx, row.JiraIssueID, TextToADF(body))
+		jiraID, perr := client.AddComment(ctx, row.JiraIssueID, MarkdownToADF(body))
 		if perr != nil {
 			// Leave the intent pending: the next cycle re-observes; if the
 			// POST actually landed, the adopt-scan finalizes without a

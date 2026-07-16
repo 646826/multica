@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -92,5 +93,30 @@ func TestADFToMarkdownNonADFInputPassesThroughAsText(t *testing.T) {
 	md, lossy := ADFToMarkdown([]byte("just plain words"))
 	if !lossy || !strings.Contains(md, "just plain words") {
 		t.Fatalf("non-ADF input must pass through readably (lossy): %q %v", md, lossy)
+	}
+}
+
+func TestMarkdownToADFRoundTripPreservesProfile(t *testing.T) {
+	md := "## Title\n\n**bold** and *em* and `code` and [a link](https://example.test)\n\n- one\n- two\n\n1. first\n\n```go\nfmt.Println(1)\n```"
+	adf := MarkdownToADF(md)
+	back, lossy := ADFToMarkdown(adf)
+	if lossy {
+		t.Fatalf("profile round-trip must not be lossy: %s", back)
+	}
+	for _, want := range []string{"## Title", "**bold**", "*em*", "`code`", "[a link](https://example.test)", "- one", "- two", "1. first", "```go\nfmt.Println(1)\n```"} {
+		if !strings.Contains(back, want) {
+			t.Errorf("round-trip lost %q:\n%s", want, back)
+		}
+	}
+}
+
+func TestMarkdownToADFNeverPanicsOnAdversarialInput(t *testing.T) {
+	inputs := []string{"", "***", "``", "[unclosed](", "#######", "```", strings.Repeat("*a*", 5000), "1. ", "- "}
+	for _, in := range inputs {
+		adf := MarkdownToADF(in)
+		var doc map[string]any
+		if err := json.Unmarshal(adf, &doc); err != nil {
+			t.Fatalf("invalid ADF for %q: %v", in, err)
+		}
 	}
 }
