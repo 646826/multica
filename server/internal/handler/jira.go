@@ -162,7 +162,7 @@ func (h *Handler) ConnectJira(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, err.Error())
 		return
 	}
-	h.journalJira(r, conn, "config_changed", map[string]any{"action": "connect"})
+	h.journalJira(r, conn, jira.JournalConfigChanged, map[string]any{"action": "connect"})
 	writeJSON(w, http.StatusCreated, jiraConnectionToResponse(conn))
 }
 
@@ -324,7 +324,7 @@ func (h *Handler) PatchJiraConnection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update jira connection")
 		return
 	}
-	h.journalJira(r, updated, "config_changed", map[string]any{"action": "patch"})
+	h.journalJira(r, updated, jira.JournalConfigChanged, map[string]any{"action": "patch"})
 	writeJSON(w, http.StatusOK, jiraConnectionToResponse(updated))
 }
 
@@ -420,7 +420,7 @@ func (h *Handler) ListJiraProjects(w http.ResponseWriter, r *http.Request) {
 
 // journalJira best-effort records a management event; failures are logged
 // via the response path only (journal is observability, never correctness).
-func (h *Handler) journalJira(r *http.Request, conn db.JiraConnection, kind string, detail map[string]any) {
+func (h *Handler) journalJira(r *http.Request, conn db.JiraConnection, kind jira.JournalKind, detail map[string]any) {
 	payload, err := json.Marshal(detail)
 	if err != nil {
 		payload = []byte(`{}`)
@@ -428,7 +428,7 @@ func (h *Handler) journalJira(r *http.Request, conn db.JiraConnection, kind stri
 	_, _ = h.Queries.InsertJiraJournal(r.Context(), db.InsertJiraJournalParams{
 		ConnectionID: conn.ID,
 		WorkspaceID:  conn.WorkspaceID,
-		Kind:         kind,
+		Kind:         string(kind),
 		JiraKey:      "",
 		Detail:       payload,
 	})

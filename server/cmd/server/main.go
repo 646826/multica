@@ -16,6 +16,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
+	jirainteg "github.com/multica-ai/multica/server/internal/integrations/jira"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/realtime"
@@ -391,6 +392,13 @@ func main() {
 	go runDBStatsLogger(sweepCtx, pool)
 	if h.WebhookDeliveryWorker != nil {
 		go h.WebhookDeliveryWorker.Run(sweepCtx)
+	}
+
+	// Native Jira sync reconcile worker. Only exists when the deployment
+	// holds the master key (zero footprint otherwise, NFR-4); with no
+	// enabled Connections it idles on a cheap scan.
+	if h.Jira != nil && h.Jira.Configured() {
+		go jirainteg.NewWorker(pool, queries, h.Jira).Run(sweepCtx)
 	}
 
 	// Channel inbound supervisor (MUL-3620): holds the §4.4 WS lease per
