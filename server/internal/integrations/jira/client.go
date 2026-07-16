@@ -612,3 +612,13 @@ func (c *Client) DoTransition(ctx context.Context, issueID, transitionID string)
 	body := map[string]any{"transition": map[string]string{"id": transitionID}}
 	return c.do(ctx, http.MethodPost, "/rest/api/3/issue/"+url.PathEscape(issueID)+"/transitions", nil, body, nil)
 }
+
+// UpdateIssueFields PUTs a partial field set (summary/description/labels/…).
+// Field-set writes are idempotent, so at-least-once retries are safe without
+// an external ref. The caller refreshes its remote snapshot by read-back.
+func (c *Client) UpdateIssueFields(ctx context.Context, issueID string, fields map[string]any) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	return c.do(ctx, http.MethodPut, "/rest/api/3/issue/"+url.PathEscape(issueID), nil, map[string]any{"fields": fields}, nil)
+}

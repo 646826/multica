@@ -406,3 +406,11 @@ func inlineToADF(text string) []any {
 	}
 	return out
 }
+
+// MarkdownToADFAny is MarkdownToADF as a decoded value, for embedding in a
+// fields map that is then marshalled as one document.
+func MarkdownToADFAny(md string) any {
+	var v any
+	_ = json.Unmarshal(MarkdownToADF(md), &v)
+	return v
+}

@@ -213,6 +213,9 @@ func (w *Worker) updateIssueOnce(ctx context.Context, conn db.JiraConnection, sm
 
 	changedFields := false
 	statusTouched := false
+	outFields := map[string]any{}
+	var outApply []func(*ObservedIssue)
+	var outBreadcrumbs []Action
 	newTitle, newDescription := issue.Title, issue.Description
 	for _, act := range actions {
 		switch act.Kind {
@@ -239,19 +242,32 @@ func (w *Worker) updateIssueOnce(ctx context.Context, conn db.JiraConnection, sm
 			if berr := w.postLocalBreadcrumb(ctx, conn, issue, act); berr != nil {
 				return fmt.Errorf("breadcrumb: %w", berr)
 			}
-			switch act.Item {
-			case "title":
-				items.Title.BreadcrumbFor = SHA(act.Old)
-			case "description":
-				items.Description.BreadcrumbFor = SHA(act.Old)
-			case "status":
-				items.Status.BreadcrumbFor = SHA(act.Old)
-			}
+			markBreadcrumb(&items, act)
 		case ActOutTransition:
 			if err := w.applyOutTransition(ctx, conn, link, &items, act, cycleID); err != nil {
 				return err
 			}
 			statusTouched = true
+		case ActOutTitle:
+			outFields["summary"] = act.Value
+			outApply = append(outApply, func(refreshed *ObservedIssue) {
+				v := act.Value
+				if refreshed != nil {
+					v = refreshed.Summary
+				}
+				items.Title = ItemState{RemoteSHA: SHA(v), LocalSHA: SHA(act.Value), BreadcrumbFor: items.Title.BreadcrumbFor}
+			})
+		case ActOutDesc:
+			outFields["description"] = MarkdownToADFAny(act.Value)
+			outApply = append(outApply, func(refreshed *ObservedIssue) {
+				v := act.Value
+				if refreshed != nil {
+					v = refreshed.DescriptionMD
+				}
+				items.Description = ItemState{RemoteSHA: SHA(v), LocalSHA: SHA(act.Value), BreadcrumbFor: items.Description.BreadcrumbFor}
+			})
+		case ActBreadcrumbOut:
+			outBreadcrumbs = append(outBreadcrumbs, act)
 		case ActSkip:
 			_ = w.Journal.Record(ctx, conn, cycleID, act.Journal, link.IssueID, link.JiraKey, act.Detail)
 		default:
@@ -259,6 +275,40 @@ func (w *Worker) updateIssueOnce(ctx context.Context, conn db.JiraConnection, sm
 			// label/field inbound applies land with Epic 5; snapshots for
 			// those items stay untouched so their appliers see the same
 			// divergence on their cycle.
+		}
+	}
+
+	// Coalesced outbound field PUT (FR-12 outbound / FR-20): at most one write
+	// per issue per cycle; refresh the remote snapshots by read-back so lossy
+	// ADF round-trips reach a fixpoint instead of churning.
+	if len(outFields) > 0 || len(outBreadcrumbs) > 0 {
+		client, cerr := w.Svc.ClientFor(conn)
+		if cerr != nil {
+			return cerr
+		}
+		for _, bc := range outBreadcrumbs {
+			body := fmt.Sprintf("*Multica sync:* %s was overwritten by the leading system.\n\nPrevious value:\n\n%s", bc.Item, truncateForComment(bc.Old))
+			if _, perr := client.AddComment(ctx, link.JiraIssueID, MarkdownToADF(body)); perr != nil {
+				return fmt.Errorf("outbound breadcrumb: %w", perr)
+			}
+		}
+		if len(outFields) > 0 {
+			if perr := client.UpdateIssueFields(ctx, link.JiraIssueID, outFields); perr != nil {
+				return fmt.Errorf("outbound fields: %w", perr)
+			}
+		}
+		var refreshed *ObservedIssue
+		if len(outApply) > 0 {
+			if ri, gerr := client.GetIssue(ctx, link.JiraIssueID, nil); gerr == nil {
+				md, _ := ADFToMarkdown(ri.DescriptionADF)
+				refreshed = &ObservedIssue{Summary: ri.Summary, DescriptionMD: md, StatusID: ri.StatusID}
+			}
+		}
+		for _, apply := range outApply {
+			apply(refreshed)
+		}
+		for _, bc := range outBreadcrumbs {
+			markBreadcrumb(&items, bc)
 		}
 	}
 
@@ -517,4 +567,17 @@ func (w *Worker) applyOutTransition(ctx context.Context, conn db.JiraConnection,
 	}
 	items.Status = StatusState{RemoteID: act.Target, Local: act.Value, BreadcrumbFor: items.Status.BreadcrumbFor}
 	return nil
+}
+
+// markBreadcrumb records that a breadcrumb has been posted for a discarded
+// value so it never re-posts (FR-8 once).
+func markBreadcrumb(items *ItemsV1, act Action) {
+	switch act.Item {
+	case "title":
+		items.Title.BreadcrumbFor = SHA(act.Old)
+	case "description":
+		items.Description.BreadcrumbFor = SHA(act.Old)
+	case "status":
+		items.Status.BreadcrumbFor = SHA(act.Old)
+	}
 }
