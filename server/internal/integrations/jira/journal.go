@@ -53,10 +53,12 @@ const (
 	JournalLabelTransformed JournalKind = "label_transformed"
 	JournalFieldSkipped     JournalKind = "field_skipped"
 	// Agent tagging (FR-27) — application and guarded skips.
-	JournalTagAssigned  JournalKind = "tag_assigned"
-	JournalTagSkipped   JournalKind = "tag_skipped"
-	JournalScopeResumed JournalKind = "scope_resumed"
-	JournalLinkOrphaned JournalKind = "link_orphaned"
+	JournalTagAssigned JournalKind = "tag_assigned"
+	JournalTagSkipped  JournalKind = "tag_skipped"
+	// Mention bridge (FR-29): a mention could not wake its agent.
+	JournalMentionDenied JournalKind = "mention_denied"
+	JournalScopeResumed  JournalKind = "scope_resumed"
+	JournalLinkOrphaned  JournalKind = "link_orphaned"
 )
 
 // journalKinds is the registry; Record refuses kinds outside it.
@@ -82,6 +84,7 @@ var journalKinds = map[JournalKind]bool{
 	JournalFieldSkipped:             true,
 	JournalTagAssigned:              true,
 	JournalTagSkipped:               true,
+	JournalMentionDenied:            true,
 	JournalScopeResumed:             true,
 	JournalLinkOrphaned:             true,
 }

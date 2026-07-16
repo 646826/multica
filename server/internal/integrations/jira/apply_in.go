@@ -568,7 +568,13 @@ func (w *Worker) mirrorComments(ctx context.Context, conn db.JiraConnection, lin
 		if author == "" {
 			author = "unknown"
 		}
-		content := fmt.Sprintf("**From Jira — %s**\n\n%s", author, body)
+		// Mention bridge (FR-29): rewrite @AgentName in the human body before
+		// mirroring so the native trigger machinery can wake the agent.
+		bridged, wake, berr := w.bridgeMentions(ctx, conn, body)
+		if berr != nil {
+			return berr
+		}
+		content := fmt.Sprintf("**From Jira — %s**\n\n%s", author, bridged)
 
 		tx, err := w.Pool.Begin(ctx)
 		if err != nil {
@@ -596,8 +602,31 @@ func (w *Worker) mirrorComments(ctx context.Context, conn db.JiraConnection, lin
 		if err := tx.Commit(ctx); err != nil {
 			return err
 		}
+		// Wake each mentioned agent through the native mention-enqueue path
+		// (explicit mentions only; the mirrored comment is system-authored so
+		// implicit routing never fires — AD-6). A denied invocation is
+		// journaled, never silently dropped and never author-faked.
+		w.wakeMentionedAgents(ctx, conn, link, comment.ID, wake, cycleID)
 	}
 	return nil
+}
+
+// wakeMentionedAgents enqueues one native mention task per mentioned agent.
+func (w *Worker) wakeMentionedAgents(ctx context.Context, conn db.JiraConnection, link db.JiraLink, commentID pgtype.UUID, agentIDs []pgtype.UUID, cycleID pgtype.UUID) {
+	if len(agentIDs) == 0 || w.Tasks == nil {
+		return
+	}
+	issue, err := w.Q.GetIssue(ctx, link.IssueID)
+	if err != nil {
+		return
+	}
+	for _, agentID := range agentIDs {
+		if _, eerr := w.Tasks.EnqueueTaskForMention(ctx, issue, agentID, commentID); eerr != nil {
+			_ = w.Journal.Record(ctx, conn, cycleID, JournalMentionDenied, link.IssueID, link.JiraKey, map[string]any{
+				"agent_id": uuidStr(agentID), "error": redactError(eerr),
+			})
+		}
+	}
 }
 
 // recordCommentLink stores an identity-only row (restricted or self-authored

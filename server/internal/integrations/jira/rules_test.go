@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -145,5 +146,113 @@ func TestTagRuleAssignsAgentEdgeTriggeredWithHumanPrecedence(t *testing.T) {
 	issue, _ = q.GetIssue(ctx, link.IssueID)
 	if issue.AssigneeType.String != "member" {
 		t.Fatalf("label disappearing must never unassign (FR-27): %+v", issue)
+	}
+}
+
+// Story 6.2 — mention bridge.
+
+func TestMentionBridgeWakesAgentAndProtectsHumans(t *testing.T) {
+	f := newFakeJira(t)
+	now := time.Now().UTC()
+	comments := atomic.Value{}
+	comments.Store("initial")
+	f.mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"issues":[{"id":"id-GAME-95","key":"GAME-95","fields":{
+			"summary":"Talk","description":{"type":"doc","version":1,"content":[]},
+			"status":{"id":"100","name":"To Do","statusCategory":{"key":"new"}},
+			"labels":[],"updated":%q}}],"isLast":true}`, now.Format(jiraTimeLayout))
+	})
+	f.mux.HandleFunc("/rest/api/3/issue/id-GAME-95/comment", func(w http.ResponseWriter, r *http.Request) {
+		if comments.Load() == "with" {
+			// A human comment mentioning the agent (plain text) AND a real
+			// Jira user-mention of a human named like the agent (ADF node).
+			fmt.Fprintf(w, `{"comments":[
+				{"id":"c-m1","author":{"accountId":"acc-human","displayName":"Marco"},
+				 "body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[
+					{"type":"text","text":"hey @Fixer please look, cc "},
+					{"type":"mention","attrs":{"id":"acc-max","text":"@Fixer"}},
+					{"type":"text","text":" the human"}
+				 ]}]},"created":%q}
+			],"startAt":0,"maxResults":100,"total":1}`, now.Format(jiraTimeLayout))
+			return
+		}
+		w.Write([]byte(`{"comments":[],"startAt":0,"maxResults":100,"total":0}`))
+	})
+	w, conn, q := importFixture(t, f)
+	ctx := context.Background()
+	makeTestAgent(t, w, conn.WorkspaceID, "Fixer")
+
+	if _, err := w.runCycle(ctx, conn); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	link, _ := q.GetJiraLinkByJiraIssueID(ctx, db.GetJiraLinkByJiraIssueIDParams{ConnectionID: conn.ID, JiraIssueID: "id-GAME-95"})
+
+	comments.Store("with")
+	c2, _ := q.GetJiraConnectionByID(ctx, conn.ID)
+	_ = q.UpdateJiraConnectionCursors(ctx, db.UpdateJiraConnectionCursorsParams{
+		ID: conn.ID, JiraCursor: pgtype.Timestamptz{Time: now.Add(-time.Hour), Valid: true}, LocalCursor: c2.LocalCursor})
+	c2, _ = q.GetJiraConnectionByID(ctx, conn.ID)
+	if _, err := w.runCycle(ctx, c2); err != nil {
+		t.Fatalf("mention cycle: %v", err)
+	}
+
+	rows, _ := q.ListCommentsForIssue(ctx, db.ListCommentsForIssueParams{IssueID: link.IssueID, WorkspaceID: conn.WorkspaceID, Limit: 100})
+	var mirrored string
+	for _, c := range rows {
+		if c.AuthorType == "system" && strings.Contains(c.Content, "From Jira") {
+			mirrored = c.Content
+		}
+	}
+	if !strings.Contains(mirrored, "mention://agent/") {
+		t.Fatalf("plain-text @Fixer must become a native mention: %s", mirrored)
+	}
+	// The human Jira mention node rendered WITHOUT @ ("Fixer the human") must
+	// NOT have been converted into a second agent mention.
+	if strings.Count(mirrored, "mention://agent/") != 1 {
+		t.Fatalf("real Jira user-mention must never convert to an agent mention: %s", mirrored)
+	}
+	// The mention must wake the agent (native mention enqueue).
+	if n := agentTaskCount(t, w, conn.WorkspaceID); n != 1 {
+		t.Fatalf("mention must enqueue exactly one run, got %d", n)
+	}
+}
+
+func TestMentionBridgeToggleOff(t *testing.T) {
+	f := newFakeJira(t)
+	now := time.Now().UTC()
+	f.mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"issues":[{"id":"id-GAME-96","key":"GAME-96","fields":{
+			"summary":"Q","description":{"type":"doc","version":1,"content":[]},
+			"status":{"id":"100","name":"To Do","statusCategory":{"key":"new"}},
+			"labels":[],"updated":%q}}],"isLast":true}`, now.Format(jiraTimeLayout))
+	})
+	f.mux.HandleFunc("/rest/api/3/issue/id-GAME-96/comment", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"comments":[{"id":"c-x","author":{"accountId":"acc-human","displayName":"Marco"},
+			"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"@Fixer hi"}]}]},
+			"created":%q}],"startAt":0,"maxResults":100,"total":1}`, now.Format(jiraTimeLayout))
+	})
+	w, conn, q := importFixture(t, f)
+	ctx := context.Background()
+	makeTestAgent(t, w, conn.WorkspaceID, "Fixer")
+	conn, _ = q.UpdateJiraConnectionConfig(ctx, db.UpdateJiraConnectionConfigParams{
+		ID: conn.ID, Enabled: true, Mode: conn.Mode, LeadingSystem: conn.LeadingSystem,
+		CommentsEnabled: true, LabelsEnabled: true, CustomFieldsEnabled: true,
+		CreateFromJira: true, CreateToJira: false, JqlFilter: "", LabelPrefix: "",
+		MentionBridgeEnabled: false, OutboundIssueType: "Task",
+		StatusMap: []byte(`{"in":{"100":"todo"},"out":{"todo":"100"}}`),
+		FieldMap:  []byte(`[]`), TagRules: []byte(`[]`), CycleIntervalSeconds: 45,
+	})
+	if _, err := w.runCycle(ctx, conn); err != nil {
+		t.Fatalf("cycle: %v", err)
+	}
+	link, _ := q.GetJiraLinkByJiraIssueID(ctx, db.GetJiraLinkByJiraIssueIDParams{ConnectionID: conn.ID, JiraIssueID: "id-GAME-96"})
+	rows, _ := q.ListCommentsForIssue(ctx, db.ListCommentsForIssueParams{IssueID: link.IssueID, WorkspaceID: conn.WorkspaceID, Limit: 100})
+	for _, c := range rows {
+		if strings.Contains(c.Content, "mention://agent/") {
+			t.Fatalf("toggle off must not rewrite mentions: %s", c.Content)
+		}
+	}
+	if n := agentTaskCount(t, w, conn.WorkspaceID); n != 0 {
+		t.Fatalf("toggle off must not wake agents: %d", n)
 	}
 }
