@@ -9,9 +9,11 @@ import (
 	"math/rand/v2"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -39,6 +41,7 @@ type Worker struct {
 	Pool    *pgxpool.Pool
 	Q       *db.Queries
 	Svc     *Service
+	Issues  *service.IssueService
 	Journal *Journal
 
 	// nextRun tracks per-connection due times in-process (jittered cadence);
@@ -50,11 +53,12 @@ type Worker struct {
 	sleep func(d time.Duration)
 }
 
-func NewWorker(pool *pgxpool.Pool, q *db.Queries, svc *Service) *Worker {
+func NewWorker(pool *pgxpool.Pool, q *db.Queries, svc *Service, issues *service.IssueService) *Worker {
 	return &Worker{
 		Pool:    pool,
 		Q:       q,
 		Svc:     svc,
+		Issues:  issues,
 		Journal: &Journal{Q: q},
 		nextRun: map[[16]byte]time.Time{},
 		now:     time.Now,
@@ -141,36 +145,101 @@ func (w *Worker) runCycle(ctx context.Context, conn db.JiraConnection) (bool, er
 	}()
 
 	cycleID := pgtype.UUID{Bytes: randomUUIDBytes(), Valid: true}
-	err = w.cycleBody(ctx, conn, cycleID)
-	w.recordHealth(ctx, conn, cycleID, err)
+	requests, err := w.cycleBody(ctx, conn, cycleID)
+	w.recordHealth(ctx, conn, cycleID, requests, err)
 	w.Journal.Prune(ctx, conn.ID)
 	return true, err
 }
 
-// cycleBody is the observe→diff→plan→apply→record pass. The skeleton probes
-// the credential (identity + liveness) and advances the cursors; the observe
-// and apply arms land with the Epic 2+ stories.
-func (w *Worker) cycleBody(ctx context.Context, conn db.JiraConnection, cycleID pgtype.UUID) error {
+// cycleBody is the observe→diff→plan→apply→record pass (AD-1). The Cursor
+// advances only after every observed issue applied cleanly; a failing cycle
+// keeps it so the whole window retries next cycle (idempotent claims make
+// re-processing free).
+func (w *Worker) cycleBody(ctx context.Context, conn db.JiraConnection, cycleID pgtype.UUID) (int64, error) {
 	client, err := w.Svc.ClientFor(conn)
 	if err != nil {
-		return err
-	}
-	if _, err := client.Myself(ctx); err != nil {
-		return err
+		return 0, err
 	}
 
-	now := pgtype.Timestamptz{Time: w.now().UTC(), Valid: true}
+	fieldRows, err := ParseFieldMap(conn.FieldMap)
+	if err != nil {
+		return client.Requests(), err
+	}
+	var fieldIDs []string
+	for _, r := range fieldRows {
+		fieldIDs = append(fieldIDs, r.ExternalField)
+	}
+	sm, err := ParseStatusMap(conn.StatusMap)
+	if err != nil {
+		return client.Requests(), err
+	}
+
+	observed, truncated, err := observeJira(ctx, client, conn, fieldIDs)
+	if err != nil {
+		return client.Requests(), err
+	}
+	if truncated {
+		_ = w.Journal.Record(ctx, conn, cycleID, JournalObserveTruncated, pgtype.UUID{}, "", map[string]any{
+			"page_cap": observePageCap,
+		})
+	}
+
+	var maxUpdated time.Time
+	var seenLinked []string
+	for _, obs := range observed {
+		if obs.Updated.After(maxUpdated) {
+			maxUpdated = obs.Updated
+		}
+		link, lerr := w.Q.GetJiraLinkByJiraIssueID(ctx, db.GetJiraLinkByJiraIssueIDParams{
+			ConnectionID: conn.ID, JiraIssueID: obs.ID,
+		})
+		switch {
+		case errors.Is(lerr, pgx.ErrNoRows):
+			if conn.CreateFromJira {
+				if err := w.importIssue(ctx, conn, sm, obs, cycleID); err != nil {
+					return client.Requests(), err
+				}
+			}
+		case lerr != nil:
+			return client.Requests(), lerr
+		case link.State == "pending":
+			if err := w.importIssue(ctx, conn, sm, obs, cycleID); err != nil {
+				return client.Requests(), err
+			}
+		case link.State == "ok":
+			seenLinked = append(seenLinked, obs.ID)
+			// Update path lands with Story 2.4; observation is recorded so
+			// the orphan sweep never flags a live pair.
+		default:
+			// dormant/orphaned pairs are fully suspended (FR-11/FR-14).
+		}
+	}
+	if len(seenLinked) > 0 {
+		if err := w.Q.TouchJiraLinksSeen(ctx, db.TouchJiraLinksSeenParams{
+			ConnectionID: conn.ID, Column2: seenLinked,
+		}); err != nil {
+			return client.Requests(), err
+		}
+	}
+
+	// Record: the Cursor advances to the newest applied observation; an
+	// empty first scan initializes it to now.
 	jiraCursor := conn.JiraCursor
-	if !jiraCursor.Valid {
-		jiraCursor = now
+	if !maxUpdated.IsZero() {
+		jiraCursor = pgtype.Timestamptz{Time: maxUpdated.UTC(), Valid: true}
+	} else if !jiraCursor.Valid {
+		jiraCursor = pgtype.Timestamptz{Time: w.now().UTC(), Valid: true}
 	}
 	localCursor := conn.LocalCursor
 	if !localCursor.Valid {
-		localCursor = now
+		localCursor = pgtype.Timestamptz{Time: w.now().UTC(), Valid: true}
 	}
-	return w.Q.UpdateJiraConnectionCursors(ctx, db.UpdateJiraConnectionCursorsParams{
+	if err := w.Q.UpdateJiraConnectionCursors(ctx, db.UpdateJiraConnectionCursorsParams{
 		ID: conn.ID, JiraCursor: jiraCursor, LocalCursor: localCursor,
-	})
+	}); err != nil {
+		return client.Requests(), err
+	}
+	return client.Requests(), nil
 }
 
 // healthSnapshot is the wire shape stored in jira_connection.health.
@@ -183,8 +252,8 @@ type healthSnapshot struct {
 
 // recordHealth classifies the cycle outcome (auth vs permission vs generic)
 // and journals failures with their paired recovery events (AD-14, FR-4).
-func (w *Worker) recordHealth(ctx context.Context, conn db.JiraConnection, cycleID pgtype.UUID, cycleErr error) {
-	snap := healthSnapshot{State: "ok", LastCycleAt: w.now().UTC().Format(time.RFC3339)}
+func (w *Worker) recordHealth(ctx context.Context, conn db.JiraConnection, cycleID pgtype.UUID, requests int64, cycleErr error) {
+	snap := healthSnapshot{State: "ok", LastCycleAt: w.now().UTC().Format(time.RFC3339), RequestsLastCycle: requests}
 	if cycleErr != nil {
 		snap.State = "degraded"
 		var apiErr *APIError

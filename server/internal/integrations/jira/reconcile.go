@@ -33,6 +33,7 @@ type ObservedIssue struct {
 	DescriptionLossy bool
 	StatusID         string
 	StatusName       string
+	StatusCategory   string
 	Labels           []string
 	Fields           map[string]string // mapped field id → raw JSON value (canonical string form)
 	Updated          time.Time
@@ -74,6 +75,7 @@ func observeJira(ctx context.Context, client *Client, conn db.JiraConnection, fi
 			DescriptionLossy: lossy,
 			StatusID:         ri.StatusID,
 			StatusName:       ri.StatusName,
+			StatusCategory:   ri.StatusCategory,
 			Labels:           ri.Labels,
 			Fields:           map[string]string{},
 			Updated:          ri.Updated,

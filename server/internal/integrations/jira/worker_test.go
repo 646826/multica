@@ -39,13 +39,16 @@ func workerFixture(t *testing.T, f *fakeJira) (*Worker, db.JiraConnection, *db.Q
 	conn.TokenEncrypted = sealed
 
 	svc := serviceWithFake(t, q, box, f)
-	w := NewWorker(pool, q, svc)
+	w := NewWorker(pool, q, svc, nil)
 	w.sleep = func(time.Duration) {}
 	return w, conn, q, pool
 }
 
 func TestRunCycleAdvancesCursorsAndHealth(t *testing.T) {
 	f := connectFake(t, true)
+	f.mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"issues":[],"isLast":true}`))
+	})
 	w, conn, q, _ := workerFixture(t, f)
 
 	ran, err := w.runCycle(context.Background(), conn)
@@ -70,12 +73,12 @@ func TestRunCycleClassifiesAuthExpiredAndRecovers(t *testing.T) {
 	f := newFakeJira(t)
 	var fail atomic.Bool
 	fail.Store(true)
-	f.mux.HandleFunc("/rest/api/3/myself", func(w http.ResponseWriter, r *http.Request) {
+	f.mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
 		if fail.Load() {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		json.NewEncoder(w).Encode(Myself{AccountID: "acc", DisplayName: "Bot"})
+		w.Write([]byte(`{"issues":[],"isLast":true}`))
 	})
 	w, conn, q, _ := workerFixture(t, f)
 
@@ -111,12 +114,12 @@ func TestRunCycleClassifiesAuthExpiredAndRecovers(t *testing.T) {
 func TestRunCycleAdvisoryLockIsExclusive(t *testing.T) {
 	f := newFakeJira(t)
 	release := make(chan struct{})
-	f.mux.HandleFunc("/rest/api/3/myself", func(w http.ResponseWriter, r *http.Request) {
+	f.mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
 		<-release // hold the first cycle open so the second contends
-		json.NewEncoder(w).Encode(Myself{AccountID: "acc", DisplayName: "Bot"})
+		w.Write([]byte(`{"issues":[],"isLast":true}`))
 	})
 	w1, conn, _, _ := workerFixture(t, f)
-	w2 := NewWorker(w1.Pool, w1.Q, w1.Svc)
+	w2 := NewWorker(w1.Pool, w1.Q, w1.Svc, nil)
 
 	var ran1, ran2 bool
 	var err1, err2 error

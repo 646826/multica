@@ -230,6 +230,37 @@ func DefaultSettings(mode string) Settings {
 	return s
 }
 
+// SuggestStatusMap proposes the connect-time default Status mapping from the
+// project's live statuses (FR-15): exact/name matches first, then Jira status
+// categories (new→todo, indeterminate→in_progress, done→done).
+func SuggestStatusMap(statuses []ProjectStatus) StatusMap {
+	sm := StatusMap{In: map[string]string{}, Out: map[string]string{}}
+	byName := map[string]string{
+		"backlog": "backlog", "to do": "todo", "todo": "todo", "open": "todo",
+		"selected for development": "todo",
+		"in progress":              "in_progress", "in development": "in_progress",
+		"in review": "in_review", "code review": "in_review", "review": "in_review",
+		"done": "done", "closed": "done", "resolved": "done",
+		"blocked": "blocked", "on hold": "blocked",
+		"cancelled": "cancelled", "canceled": "cancelled", "won't do": "cancelled",
+	}
+	byCategory := map[string]string{"new": "todo", "indeterminate": "in_progress", "done": "done"}
+	for _, st := range statuses {
+		target, ok := byName[strings.ToLower(strings.TrimSpace(st.Name))]
+		if !ok {
+			target, ok = byCategory[st.Category]
+		}
+		if !ok {
+			continue
+		}
+		sm.In[st.ID] = target
+		if _, taken := sm.Out[target]; !taken {
+			sm.Out[target] = st.ID
+		}
+	}
+	return sm
+}
+
 // requiredPermissions are the Jira project permissions the connector needs to
 // operate as a writer (CREATE_ISSUES is additionally re-checked when the
 // Multica→Jira creation flow is enabled).
@@ -306,6 +337,13 @@ func (s *Service) Connect(ctx context.Context, in ConnectInput) (db.JiraConnecti
 		}
 	}
 
+	defaults := DefaultSettings(mode)
+	if statuses, serr := client.ProjectStatuses(ctx, in.ProjectKey); serr == nil {
+		if suggested, merr := json.Marshal(SuggestStatusMap(statuses)); merr == nil {
+			defaults.StatusMap = suggested
+		}
+	}
+
 	siteHost := client.baseURL.Host
 	if existing, err := s.Q.GetJiraConnectionBySiteProject(ctx, db.GetJiraConnectionBySiteProjectParams{
 		SiteHost: siteHost, ProjectKey: in.ProjectKey,
@@ -318,7 +356,6 @@ func (s *Service) Connect(ctx context.Context, in ConnectInput) (db.JiraConnecti
 		return zero, fmt.Errorf("encrypt token: %w", err)
 	}
 
-	defaults := DefaultSettings(mode)
 	conn, err := s.Q.CreateJiraConnection(ctx, db.CreateJiraConnectionParams{
 		WorkspaceID:          in.WorkspaceID,
 		SiteUrl:              client.baseURL.String(),

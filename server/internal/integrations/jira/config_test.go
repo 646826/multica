@@ -222,3 +222,34 @@ func TestConnectRefusesBadCredentials(t *testing.T) {
 		t.Fatalf("want auth classification, got %v", err)
 	}
 }
+
+func TestSuggestStatusMap(t *testing.T) {
+	statuses := []ProjectStatus{
+		{ID: "1", Name: "To Do", Category: "new"},
+		{ID: "2", Name: "In Progress", Category: "indeterminate"},
+		{ID: "3", Name: "Weird Custom Gate", Category: "indeterminate"},
+		{ID: "4", Name: "Done", Category: "done"},
+		{ID: "5", Name: "Won't Do", Category: "done"},
+	}
+	sm := SuggestStatusMap(statuses)
+	if sm.In["1"] != "todo" || sm.In["2"] != "in_progress" || sm.In["4"] != "done" {
+		t.Fatalf("name-based suggestions wrong: %+v", sm.In)
+	}
+	if sm.In["3"] != "in_progress" {
+		t.Fatalf("category fallback wrong: %+v", sm.In)
+	}
+	if sm.In["5"] != "cancelled" {
+		t.Fatalf("won't do should map by name: %+v", sm.In)
+	}
+	if sm.Out["todo"] != "1" || sm.Out["done"] != "4" {
+		t.Fatalf("out targets must prefer first match: %+v", sm.Out)
+	}
+	if err := ValidateSettings(func() Settings {
+		s := DefaultSettings(ModeJiraLeads)
+		b, _ := json.Marshal(sm)
+		s.StatusMap = b
+		return s
+	}()); err != nil {
+		t.Fatalf("suggested map must validate: %v", err)
+	}
+}

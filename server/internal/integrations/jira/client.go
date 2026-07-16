@@ -316,6 +316,7 @@ type RemoteIssue struct {
 	DescriptionADF json.RawMessage
 	StatusID       string
 	StatusName     string
+	StatusCategory string // Jira status category key: new | indeterminate | done
 	Labels         []string
 	Fields         map[string]json.RawMessage
 	Updated        time.Time
@@ -376,11 +377,14 @@ func (c *Client) SearchUpdated(ctx context.Context, projectKey, extraJQL string,
 			}
 			if v, ok := it.Fields["status"]; ok {
 				var st struct {
-					ID   string `json:"id"`
-					Name string `json:"name"`
+					ID             string `json:"id"`
+					Name           string `json:"name"`
+					StatusCategory struct {
+						Key string `json:"key"`
+					} `json:"statusCategory"`
 				}
 				_ = json.Unmarshal(v, &st)
-				ri.StatusID, ri.StatusName = st.ID, st.Name
+				ri.StatusID, ri.StatusName, ri.StatusCategory = st.ID, st.Name, st.StatusCategory.Key
 			}
 			if v, ok := it.Fields["labels"]; ok {
 				_ = json.Unmarshal(v, &ri.Labels)
@@ -408,4 +412,40 @@ func (c *Client) SearchUpdated(ctx context.Context, projectKey, extraJQL string,
 		}
 		nextPageToken = page.NextPageToken
 	}
+}
+
+// ProjectStatus is one status of the connected project's workflows.
+type ProjectStatus struct {
+	ID       string
+	Name     string
+	Category string // new | indeterminate | done
+}
+
+// ProjectStatuses lists the distinct statuses reachable in the project's
+// workflows (the suggested-mapping source, FR-15, and the /statuses catalog).
+func (c *Client) ProjectStatuses(ctx context.Context, projectKey string) ([]ProjectStatus, error) {
+	var payload []struct {
+		Statuses []struct {
+			ID             string `json:"id"`
+			Name           string `json:"name"`
+			StatusCategory struct {
+				Key string `json:"key"`
+			} `json:"statusCategory"`
+		} `json:"statuses"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/rest/api/3/project/"+url.PathEscape(projectKey)+"/statuses", nil, nil, &payload); err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var out []ProjectStatus
+	for _, issueType := range payload {
+		for _, st := range issueType.Statuses {
+			if seen[st.ID] {
+				continue
+			}
+			seen[st.ID] = true
+			out = append(out, ProjectStatus{ID: st.ID, Name: st.Name, Category: st.StatusCategory.Key})
+		}
+	}
+	return out, nil
 }

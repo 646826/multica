@@ -194,3 +194,25 @@ WHERE connection_id = $1 AND jira_issue_id = ANY($2::text[]);
 -- Connection-delete cleanup (application-code cascade, AD-3).
 DELETE FROM jira_link
 WHERE connection_id = $1;
+
+-- name: UpsertPendingJiraLink :one
+-- Idempotent inbound claim (AD-15): first caller creates the pending row;
+-- re-observation returns the existing row unchanged (no-op update makes
+-- ON CONFLICT return it).
+INSERT INTO jira_link (connection_id, workspace_id, issue_id, jira_issue_id, jira_key, state, items)
+VALUES ($1, $2, NULL, $3, $4, 'pending', '{}'::jsonb)
+ON CONFLICT (connection_id, jira_issue_id)
+DO UPDATE SET updated_at = jira_link.updated_at
+RETURNING *;
+
+-- name: FinalizeJiraLinkInbound :exec
+UPDATE jira_link
+SET state = 'ok', issue_id = $2, jira_key = $3, items = $4, last_seen_at = now(), updated_at = now()
+WHERE id = $1;
+
+-- name: FindIssueIDByJiraMarker :one
+-- Crash-window resolver (AD-15): adopt an already-created mirror by its
+-- metadata marker instead of re-creating. Read-only touch of the core table.
+SELECT id FROM issue
+WHERE workspace_id = $1 AND metadata @> $2::jsonb
+LIMIT 1;

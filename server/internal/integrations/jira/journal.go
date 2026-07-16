@@ -33,16 +33,21 @@ const (
 	// Policy skips (planner-emitted, SM-5 classes).
 	JournalStatusUnmapped    JournalKind = "status_unmapped"
 	JournalInboundSuppressed JournalKind = "inbound_suppressed"
+	// Inbound import (AD-15 protocol).
+	JournalImportAdopted      JournalKind = "import_adopted"
+	JournalImportMarkerFailed JournalKind = "import_marker_failed"
 )
 
 // journalKinds is the registry; Record refuses kinds outside it.
 var journalKinds = map[JournalKind]bool{
-	JournalConfigChanged:     true,
-	JournalCycleError:        true,
-	JournalCycleRecovered:    true,
-	JournalObserveTruncated:  true,
-	JournalStatusUnmapped:    true,
-	JournalInboundSuppressed: true,
+	JournalConfigChanged:      true,
+	JournalCycleError:         true,
+	JournalCycleRecovered:     true,
+	JournalObserveTruncated:   true,
+	JournalStatusUnmapped:     true,
+	JournalInboundSuppressed:  true,
+	JournalImportAdopted:      true,
+	JournalImportMarkerFailed: true,
 }
 
 // Journal retention bounds (operational envelope): whichever prunes more.

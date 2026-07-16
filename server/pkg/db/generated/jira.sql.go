@@ -275,6 +275,49 @@ func (q *Queries) FinalizeJiraLink(ctx context.Context, arg FinalizeJiraLinkPara
 	return err
 }
 
+const finalizeJiraLinkInbound = `-- name: FinalizeJiraLinkInbound :exec
+UPDATE jira_link
+SET state = 'ok', issue_id = $2, jira_key = $3, items = $4, last_seen_at = now(), updated_at = now()
+WHERE id = $1
+`
+
+type FinalizeJiraLinkInboundParams struct {
+	ID      pgtype.UUID `json:"id"`
+	IssueID pgtype.UUID `json:"issue_id"`
+	JiraKey string      `json:"jira_key"`
+	Items   []byte      `json:"items"`
+}
+
+func (q *Queries) FinalizeJiraLinkInbound(ctx context.Context, arg FinalizeJiraLinkInboundParams) error {
+	_, err := q.db.Exec(ctx, finalizeJiraLinkInbound,
+		arg.ID,
+		arg.IssueID,
+		arg.JiraKey,
+		arg.Items,
+	)
+	return err
+}
+
+const findIssueIDByJiraMarker = `-- name: FindIssueIDByJiraMarker :one
+SELECT id FROM issue
+WHERE workspace_id = $1 AND metadata @> $2::jsonb
+LIMIT 1
+`
+
+type FindIssueIDByJiraMarkerParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Column2     []byte      `json:"column_2"`
+}
+
+// Crash-window resolver (AD-15): adopt an already-created mirror by its
+// metadata marker instead of re-creating. Read-only touch of the core table.
+func (q *Queries) FindIssueIDByJiraMarker(ctx context.Context, arg FindIssueIDByJiraMarkerParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, findIssueIDByJiraMarker, arg.WorkspaceID, arg.Column2)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const getJiraConnectionByID = `-- name: GetJiraConnectionByID :one
 SELECT id, workspace_id, site_url, site_host, project_key, project_id, email, token_encrypted, connected_by_id, enabled, mode, leading_system, comments_enabled, labels_enabled, custom_fields_enabled, create_from_jira, create_to_jira, jql_filter, label_prefix, mention_bridge_enabled, outbound_issue_type, status_map, field_map, tag_rules, cycle_interval_seconds, jira_cursor, local_cursor, health, created_at, updated_at FROM jira_connection
 WHERE id = $1
@@ -976,4 +1019,49 @@ type UpdateJiraLinkItemsParams struct {
 func (q *Queries) UpdateJiraLinkItems(ctx context.Context, arg UpdateJiraLinkItemsParams) error {
 	_, err := q.db.Exec(ctx, updateJiraLinkItems, arg.ID, arg.Items, arg.JiraKey)
 	return err
+}
+
+const upsertPendingJiraLink = `-- name: UpsertPendingJiraLink :one
+INSERT INTO jira_link (connection_id, workspace_id, issue_id, jira_issue_id, jira_key, state, items)
+VALUES ($1, $2, NULL, $3, $4, 'pending', '{}'::jsonb)
+ON CONFLICT (connection_id, jira_issue_id)
+DO UPDATE SET updated_at = jira_link.updated_at
+RETURNING id, connection_id, workspace_id, issue_id, jira_issue_id, jira_key, state, items, dirty, retry_at, retry_count, last_seen_at, created_at, updated_at
+`
+
+type UpsertPendingJiraLinkParams struct {
+	ConnectionID pgtype.UUID `json:"connection_id"`
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	JiraIssueID  string      `json:"jira_issue_id"`
+	JiraKey      string      `json:"jira_key"`
+}
+
+// Idempotent inbound claim (AD-15): first caller creates the pending row;
+// re-observation returns the existing row unchanged (no-op update makes
+// ON CONFLICT return it).
+func (q *Queries) UpsertPendingJiraLink(ctx context.Context, arg UpsertPendingJiraLinkParams) (JiraLink, error) {
+	row := q.db.QueryRow(ctx, upsertPendingJiraLink,
+		arg.ConnectionID,
+		arg.WorkspaceID,
+		arg.JiraIssueID,
+		arg.JiraKey,
+	)
+	var i JiraLink
+	err := row.Scan(
+		&i.ID,
+		&i.ConnectionID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.JiraIssueID,
+		&i.JiraKey,
+		&i.State,
+		&i.Items,
+		&i.Dirty,
+		&i.RetryAt,
+		&i.RetryCount,
+		&i.LastSeenAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
