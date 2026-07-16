@@ -52,8 +52,11 @@ const (
 	JournalCreateRejected   JournalKind = "create_rejected"
 	JournalLabelTransformed JournalKind = "label_transformed"
 	JournalFieldSkipped     JournalKind = "field_skipped"
-	JournalScopeResumed     JournalKind = "scope_resumed"
-	JournalLinkOrphaned     JournalKind = "link_orphaned"
+	// Agent tagging (FR-27) — application and guarded skips.
+	JournalTagAssigned  JournalKind = "tag_assigned"
+	JournalTagSkipped   JournalKind = "tag_skipped"
+	JournalScopeResumed JournalKind = "scope_resumed"
+	JournalLinkOrphaned JournalKind = "link_orphaned"
 )
 
 // journalKinds is the registry; Record refuses kinds outside it.
@@ -77,6 +80,8 @@ var journalKinds = map[JournalKind]bool{
 	JournalCreateRejected:           true,
 	JournalLabelTransformed:         true,
 	JournalFieldSkipped:             true,
+	JournalTagAssigned:              true,
+	JournalTagSkipped:               true,
 	JournalScopeResumed:             true,
 	JournalLinkOrphaned:             true,
 }

@@ -418,6 +418,13 @@ func (w *Worker) updateIssueOnce(ctx context.Context, conn db.JiraConnection, sm
 		items.Status.RemoteID = obs.StatusID
 	}
 
+	// Agent tagging (FR-27): evaluate rules against the observed signals.
+	// Runs after inbound applies so the issue reflects the current state; the
+	// activation status change it may make is local-only (exempt from push).
+	if _, terr := w.applyTagRules(ctx, conn, issue, &items, obs, cycleID); terr != nil {
+		return terr
+	}
+
 	jiraKey := link.JiraKey
 	if obs != nil && obs.Key != "" {
 		jiraKey = obs.Key

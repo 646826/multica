@@ -317,6 +317,7 @@ type RemoteIssue struct {
 	StatusID       string
 	StatusName     string
 	StatusCategory string // Jira status category key: new | indeterminate | done
+	AssigneeKey    string // Jira assignee accountId (empty when unassigned)
 	Labels         []string
 	Fields         map[string]json.RawMessage
 	Updated        time.Time
@@ -343,7 +344,7 @@ func (c *Client) SearchUpdated(ctx context.Context, projectKey, extraJQL string,
 	}
 	jql += " ORDER BY updated ASC"
 
-	fields := append([]string{"summary", "description", "status", "labels", "updated"}, fieldIDs...)
+	fields := append([]string{"summary", "description", "status", "labels", "assignee", "updated"}, fieldIDs...)
 
 	nextPageToken := ""
 	for {
@@ -441,6 +442,13 @@ func parseRemoteIssue(id, key string, fields map[string]json.RawMessage, fieldID
 	if v, ok := fields["labels"]; ok {
 		_ = json.Unmarshal(v, &ri.Labels)
 	}
+	if v, ok := fields["assignee"]; ok && string(v) != "null" {
+		var a struct {
+			AccountID string `json:"accountId"`
+		}
+		_ = json.Unmarshal(v, &a)
+		ri.AssigneeKey = a.AccountID
+	}
 	if v, ok := fields["updated"]; ok {
 		var s string
 		if json.Unmarshal(v, &s) == nil {
@@ -460,7 +468,7 @@ func parseRemoteIssue(id, key string, fields map[string]json.RawMessage, fieldID
 // GetIssue fetches one issue's observation snapshot by immutable id (the
 // dirty-retry refresh path, AD-2).
 func (c *Client) GetIssue(ctx context.Context, issueID string, fieldIDs []string) (RemoteIssue, error) {
-	fields := append([]string{"summary", "description", "status", "labels", "updated"}, fieldIDs...)
+	fields := append([]string{"summary", "description", "status", "labels", "assignee", "updated"}, fieldIDs...)
 	var payload struct {
 		ID     string                     `json:"id"`
 		Key    string                     `json:"key"`

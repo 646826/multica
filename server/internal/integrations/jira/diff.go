@@ -119,6 +119,16 @@ type ItemsV1 struct {
 	Status      StatusState          `json:"status"`
 	Labels      LabelsState          `json:"labels"`
 	Fields      map[string]ItemState `json:"fields,omitempty"`
+	Tag         TagState             `json:"tag"`
+}
+
+// TagState tracks edge-triggered agent tagging (FR-27): which Jira signals
+// have already fired a rule, and which agent sync last assigned (the
+// human-precedence guard compares the live assignee against it).
+type TagState struct {
+	FiredLabels   []string `json:"fired_labels,omitempty"`
+	FiredAssignee string   `json:"fired_assignee,omitempty"`
+	AssignedAgent string   `json:"assigned_agent,omitempty"`
 }
 
 // ParseItems decodes the persisted item state. An empty document initializes

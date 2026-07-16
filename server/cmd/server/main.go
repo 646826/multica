@@ -398,7 +398,7 @@ func main() {
 	// holds the master key (zero footprint otherwise, NFR-4); with no
 	// enabled Connections it idles on a cheap scan.
 	if h.Jira != nil && h.Jira.Configured() {
-		go jirainteg.NewWorker(pool, queries, h.Jira, h.IssueService, bus).Run(sweepCtx)
+		go jirainteg.NewWorker(pool, queries, h.Jira, h.IssueService, h.TaskService, bus).Run(sweepCtx)
 	}
 
 	// Channel inbound supervisor (MUL-3620): holds the §4.4 WS lease per

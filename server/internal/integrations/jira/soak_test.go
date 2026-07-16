@@ -120,7 +120,7 @@ func TestSoakAlternatingCommentsAcrossRestartExactTotals(t *testing.T) {
 	for i := 0; i < rounds; i++ {
 		if i == rounds/2 {
 			// Mid-soak restart: a brand-new worker with empty in-memory state.
-			w = NewWorker(w.Pool, w.Q, w.Svc, w.Issues, nil)
+			w = NewWorker(w.Pool, w.Q, w.Svc, w.Issues, w.Tasks, nil)
 			w.sleep = func(time.Duration) {}
 		}
 		soak.addHumanComment(i)

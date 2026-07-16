@@ -25,7 +25,10 @@ import (
 func importFixture(t *testing.T, f *fakeJira) (*Worker, db.JiraConnection, *db.Queries) {
 	t.Helper()
 	w, conn, q, pool := workerFixture(t, f)
-	w.Issues = service.NewIssueService(q, pool, events.New(), analytics.NoopClient{}, nil)
+	bus := events.New()
+	taskSvc := service.NewTaskService(q, pool, nil, bus, nil)
+	w.Issues = service.NewIssueService(q, pool, bus, analytics.NoopClient{}, taskSvc)
+	w.Tasks = taskSvc
 
 	// Imports create real issues: the workspace row must exist (issue counter
 	// lives on it). Rebind the connection to a real workspace.

@@ -41,7 +41,7 @@ func workerFixture(t *testing.T, f *fakeJira) (*Worker, db.JiraConnection, *db.Q
 	conn.TokenEncrypted = sealed
 
 	svc := serviceWithFake(t, q, box, f)
-	w := NewWorker(pool, q, svc, nil, nil)
+	w := NewWorker(pool, q, svc, nil, nil, nil)
 	w.sleep = func(time.Duration) {}
 	return w, conn, q, pool
 }
@@ -121,7 +121,7 @@ func TestRunCycleAdvisoryLockIsExclusive(t *testing.T) {
 		w.Write([]byte(`{"issues":[],"isLast":true}`))
 	})
 	w1, conn, _, _ := workerFixture(t, f)
-	w2 := NewWorker(w1.Pool, w1.Q, w1.Svc, nil, nil)
+	w2 := NewWorker(w1.Pool, w1.Q, w1.Svc, nil, nil, nil)
 
 	var ran1, ran2 bool
 	var err1, err2 error
