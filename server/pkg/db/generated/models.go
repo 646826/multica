@@ -645,6 +645,51 @@ type IssueToLabel struct {
 	LabelID pgtype.UUID `json:"label_id"`
 }
 
+type JiraConnection struct {
+	ID                   pgtype.UUID        `json:"id"`
+	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
+	SiteUrl              string             `json:"site_url"`
+	SiteHost             string             `json:"site_host"`
+	ProjectKey           string             `json:"project_key"`
+	ProjectID            string             `json:"project_id"`
+	Email                string             `json:"email"`
+	TokenEncrypted       []byte             `json:"token_encrypted"`
+	ConnectedByID        pgtype.UUID        `json:"connected_by_id"`
+	Enabled              bool               `json:"enabled"`
+	Mode                 string             `json:"mode"`
+	LeadingSystem        string             `json:"leading_system"`
+	CommentsEnabled      bool               `json:"comments_enabled"`
+	LabelsEnabled        bool               `json:"labels_enabled"`
+	CustomFieldsEnabled  bool               `json:"custom_fields_enabled"`
+	CreateFromJira       bool               `json:"create_from_jira"`
+	CreateToJira         bool               `json:"create_to_jira"`
+	JqlFilter            string             `json:"jql_filter"`
+	LabelPrefix          string             `json:"label_prefix"`
+	MentionBridgeEnabled bool               `json:"mention_bridge_enabled"`
+	OutboundIssueType    string             `json:"outbound_issue_type"`
+	StatusMap            []byte             `json:"status_map"`
+	FieldMap             []byte             `json:"field_map"`
+	TagRules             []byte             `json:"tag_rules"`
+	CycleIntervalSeconds int32              `json:"cycle_interval_seconds"`
+	JiraCursor           pgtype.Timestamptz `json:"jira_cursor"`
+	LocalCursor          pgtype.Timestamptz `json:"local_cursor"`
+	Health               []byte             `json:"health"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+}
+
+type JiraJournal struct {
+	ID           pgtype.UUID        `json:"id"`
+	ConnectionID pgtype.UUID        `json:"connection_id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	CycleID      pgtype.UUID        `json:"cycle_id"`
+	Kind         string             `json:"kind"`
+	IssueID      pgtype.UUID        `json:"issue_id"`
+	JiraKey      string             `json:"jira_key"`
+	Detail       []byte             `json:"detail"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
 type LarkBindingToken struct {
 	TokenHash      string             `json:"token_hash"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
