@@ -44,6 +44,10 @@ vi.mock("./slack-tab", () => ({
   SlackTab: () => <div data-testid="slack-tab" />,
 }));
 
+vi.mock("./jira-section", () => ({
+  JiraSection: () => <div data-testid="jira-section" />,
+}));
+
 import { IntegrationsTab } from "./integrations-tab";
 
 function renderTab() {

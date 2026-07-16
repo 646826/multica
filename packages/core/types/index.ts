@@ -146,6 +146,17 @@ export type {
   RedeemSlackBindingTokenResponse,
 } from "./slack";
 export type {
+  JiraSyncMode,
+  JiraLeadingSystem,
+  JiraHealth,
+  JiraConnection,
+  JiraConnectionEnvelope,
+  ConnectJiraPayload,
+  UpdateJiraConnectionPayload,
+  JiraProject,
+  ListJiraProjectsResponse,
+} from "./jira";
+export type {
   Autopilot,
   AutopilotStatus,
   AutopilotExecutionMode,

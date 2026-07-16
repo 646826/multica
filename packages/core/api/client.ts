@@ -130,6 +130,11 @@ import type {
   ComposioConnectInitResponse,
   SlackInstallation,
   ListSlackInstallationsResponse,
+  JiraConnection,
+  JiraConnectionEnvelope,
+  ConnectJiraPayload,
+  UpdateJiraConnectionPayload,
+  ListJiraProjectsResponse,
   RegisterSlackBYORequest,
   RedeemSlackBindingTokenResponse,
   Squad,
@@ -255,6 +260,7 @@ import {
   EMPTY_LABEL,
   EMPTY_LIST_LABELS_RESPONSE,
   EMPTY_RESOURCE_LABELS_RESPONSE,
+  JiraConnectionEnvelopeSchema,
 } from "./schemas";
 
 /** Identifies the calling client to the server.
@@ -2678,6 +2684,48 @@ export class ApiClient {
   async deleteComposioConnection(connectionId: string): Promise<void> {
     await this.fetch(`/api/integrations/composio/connections/${connectionId}`, {
       method: "DELETE",
+    });
+  }
+
+  // Jira integration (native sync)
+  async getJiraConnection(workspaceId: string): Promise<JiraConnectionEnvelope> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/jira`);
+    return parseWithFallback(
+      raw,
+      JiraConnectionEnvelopeSchema,
+      { configured: false, can_manage: false, connection: null } as JiraConnectionEnvelope,
+      { endpoint: "GET /api/workspaces/:id/jira" },
+    );
+  }
+
+  async connectJira(workspaceId: string, payload: ConnectJiraPayload): Promise<JiraConnection> {
+    return this.fetch(`/api/workspaces/${workspaceId}/jira/connect`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updateJiraConnection(
+    workspaceId: string,
+    payload: UpdateJiraConnectionPayload,
+  ): Promise<JiraConnection> {
+    return this.fetch(`/api/workspaces/${workspaceId}/jira`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async deleteJiraConnection(workspaceId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/jira`, { method: "DELETE" });
+  }
+
+  async listJiraProjects(
+    workspaceId: string,
+    payload?: { site_url: string; email: string; token: string },
+  ): Promise<ListJiraProjectsResponse> {
+    return this.fetch(`/api/workspaces/${workspaceId}/jira/projects`, {
+      method: "POST",
+      body: JSON.stringify(payload ?? {}),
     });
   }
 

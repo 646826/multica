@@ -1515,3 +1515,47 @@ export const CreateBillingPortalSessionResponseSchema = z.object({
 export const EMPTY_CREATE_BILLING_PORTAL_SESSION_RESPONSE: CreateBillingPortalSessionResponse = {
   url: "",
 };
+
+// --- Jira integration (native sync) ---
+// Lenient by design (see parseWithFallback doc): server-driven enums stay
+// strings so unknown values still parse; every field the UI merely displays
+// is optional.
+export const JiraHealthSchema = z
+  .object({
+    state: z.string().optional(),
+    last_cycle_at: z.string().optional(),
+    last_error: z.string().optional(),
+    requests_last_cycle: z.number().optional(),
+  })
+  .loose();
+
+export const JiraConnectionSchema = z
+  .object({
+    id: z.string(),
+    site_url: z.string(),
+    project_key: z.string(),
+    email: z.string(),
+    enabled: z.boolean(),
+    mode: z.string(),
+    leading_system: z.string(),
+    comments_enabled: z.boolean(),
+    labels_enabled: z.boolean(),
+    custom_fields_enabled: z.boolean(),
+    create_from_jira: z.boolean(),
+    create_to_jira: z.boolean(),
+    jql_filter: z.string().optional().default(""),
+    label_prefix: z.string().optional().default(""),
+    mention_bridge_enabled: z.boolean(),
+    outbound_issue_type: z.string().optional().default("Task"),
+    cycle_interval_seconds: z.number(),
+    health: JiraHealthSchema.optional(),
+  })
+  .loose();
+
+export const JiraConnectionEnvelopeSchema = z
+  .object({
+    configured: z.boolean(),
+    can_manage: z.boolean(),
+    connection: JiraConnectionSchema.nullable(),
+  })
+  .loose();
