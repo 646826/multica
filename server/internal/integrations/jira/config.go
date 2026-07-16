@@ -320,7 +320,8 @@ func (s *Service) Connect(ctx context.Context, in ConnectInput) (db.JiraConnecti
 	if err != nil {
 		return zero, err
 	}
-	if _, err := client.Myself(ctx); err != nil {
+	me, err := client.Myself(ctx)
+	if err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.IsAuth() {
 			return zero, fmt.Errorf("credential validation failed: token invalid or expired (Jira API tokens expire after at most one year): %w", err)
@@ -388,6 +389,14 @@ func (s *Service) Connect(ctx context.Context, in ConnectInput) (db.JiraConnecti
 		}
 		return zero, err
 	}
+	// The comment actor filter keys off the service account's identity.
+	if me.AccountID != "" {
+		if uerr := s.Q.UpdateJiraConnectionServiceAccount(ctx, db.UpdateJiraConnectionServiceAccountParams{
+			ID: conn.ID, ServiceAccountID: me.AccountID,
+		}); uerr == nil {
+			conn.ServiceAccountID = me.AccountID
+		}
+	}
 	return conn, nil
 }
 
@@ -401,12 +410,18 @@ func (s *Service) RotateToken(ctx context.Context, conn db.JiraConnection, email
 	if err != nil {
 		return err
 	}
-	if _, err := client.Myself(ctx); err != nil {
+	me, err := client.Myself(ctx)
+	if err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.IsAuth() {
 			return fmt.Errorf("credential validation failed: token invalid or expired: %w", err)
 		}
 		return fmt.Errorf("credential validation failed: %w", err)
+	}
+	if me.AccountID != "" {
+		_ = s.Q.UpdateJiraConnectionServiceAccount(ctx, db.UpdateJiraConnectionServiceAccountParams{
+			ID: conn.ID, ServiceAccountID: me.AccountID,
+		})
 	}
 	encrypted, err := s.Box.Seal([]byte(token))
 	if err != nil {

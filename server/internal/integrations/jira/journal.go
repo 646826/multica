@@ -41,25 +41,28 @@ const (
 	JournalItemRecovered JournalKind = "item_recovered"
 	// Scope & identity lifecycle (FR-11/FR-14).
 	JournalScopeDormant JournalKind = "scope_dormant"
-	JournalScopeResumed JournalKind = "scope_resumed"
-	JournalLinkOrphaned JournalKind = "link_orphaned"
+	// Comments.
+	JournalRestrictedCommentDropped JournalKind = "restricted_comment_dropped"
+	JournalScopeResumed             JournalKind = "scope_resumed"
+	JournalLinkOrphaned             JournalKind = "link_orphaned"
 )
 
 // journalKinds is the registry; Record refuses kinds outside it.
 var journalKinds = map[JournalKind]bool{
-	JournalConfigChanged:      true,
-	JournalCycleError:         true,
-	JournalCycleRecovered:     true,
-	JournalObserveTruncated:   true,
-	JournalStatusUnmapped:     true,
-	JournalInboundSuppressed:  true,
-	JournalImportAdopted:      true,
-	JournalImportMarkerFailed: true,
-	JournalItemDirty:          true,
-	JournalItemRecovered:      true,
-	JournalScopeDormant:       true,
-	JournalScopeResumed:       true,
-	JournalLinkOrphaned:       true,
+	JournalConfigChanged:            true,
+	JournalCycleError:               true,
+	JournalCycleRecovered:           true,
+	JournalObserveTruncated:         true,
+	JournalStatusUnmapped:           true,
+	JournalInboundSuppressed:        true,
+	JournalImportAdopted:            true,
+	JournalImportMarkerFailed:       true,
+	JournalItemDirty:                true,
+	JournalItemRecovered:            true,
+	JournalScopeDormant:             true,
+	JournalRestrictedCommentDropped: true,
+	JournalScopeResumed:             true,
+	JournalLinkOrphaned:             true,
 }
 
 // Journal retention bounds (operational envelope): whichever prunes more.

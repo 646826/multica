@@ -216,3 +216,31 @@ WHERE id = $1;
 SELECT id FROM issue
 WHERE workspace_id = $1 AND metadata @> $2::jsonb
 LIMIT 1;
+
+-- =====================
+-- Jira Comment Link
+-- =====================
+
+-- name: GetJiraCommentLinkByJiraID :one
+SELECT * FROM jira_comment_link
+WHERE connection_id = $1 AND jira_comment_id = $2;
+
+-- name: CreateJiraCommentLinkInbound :one
+INSERT INTO jira_comment_link (
+    connection_id, workspace_id, issue_id, comment_id, jira_comment_id, origin, state
+) VALUES ($1, $2, $3, $4, $5, 'inbound', 'ok')
+RETURNING *;
+
+-- name: ListJiraCommentLinksByIssue :many
+SELECT * FROM jira_comment_link
+WHERE issue_id = $1
+ORDER BY created_at ASC;
+
+-- name: UpdateJiraConnectionServiceAccount :exec
+UPDATE jira_connection
+SET service_account_id = $2, updated_at = now()
+WHERE id = $1;
+
+-- name: DeleteJiraCommentLinksByConnection :execrows
+DELETE FROM jira_comment_link
+WHERE connection_id = $1;

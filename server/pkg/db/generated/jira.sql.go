@@ -59,6 +59,46 @@ func (q *Queries) CountJiraJournalByKindSince(ctx context.Context, arg CountJira
 	return items, nil
 }
 
+const createJiraCommentLinkInbound = `-- name: CreateJiraCommentLinkInbound :one
+INSERT INTO jira_comment_link (
+    connection_id, workspace_id, issue_id, comment_id, jira_comment_id, origin, state
+) VALUES ($1, $2, $3, $4, $5, 'inbound', 'ok')
+RETURNING id, connection_id, workspace_id, issue_id, comment_id, jira_comment_id, origin, marker, state, created_at, updated_at
+`
+
+type CreateJiraCommentLinkInboundParams struct {
+	ConnectionID  pgtype.UUID `json:"connection_id"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	IssueID       pgtype.UUID `json:"issue_id"`
+	CommentID     pgtype.UUID `json:"comment_id"`
+	JiraCommentID string      `json:"jira_comment_id"`
+}
+
+func (q *Queries) CreateJiraCommentLinkInbound(ctx context.Context, arg CreateJiraCommentLinkInboundParams) (JiraCommentLink, error) {
+	row := q.db.QueryRow(ctx, createJiraCommentLinkInbound,
+		arg.ConnectionID,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.CommentID,
+		arg.JiraCommentID,
+	)
+	var i JiraCommentLink
+	err := row.Scan(
+		&i.ID,
+		&i.ConnectionID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.CommentID,
+		&i.JiraCommentID,
+		&i.Origin,
+		&i.Marker,
+		&i.State,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const createJiraConnection = `-- name: CreateJiraConnection :one
 INSERT INTO jira_connection (
     workspace_id, site_url, site_host, project_key, project_id, email,
@@ -75,7 +115,7 @@ INSERT INTO jira_connection (
     $18, $19, $20,
     $21
 )
-RETURNING id, workspace_id, site_url, site_host, project_key, project_id, email, token_encrypted, connected_by_id, enabled, mode, leading_system, comments_enabled, labels_enabled, custom_fields_enabled, create_from_jira, create_to_jira, jql_filter, label_prefix, mention_bridge_enabled, outbound_issue_type, status_map, field_map, tag_rules, cycle_interval_seconds, jira_cursor, local_cursor, health, created_at, updated_at
+RETURNING id, workspace_id, site_url, site_host, project_key, project_id, email, token_encrypted, connected_by_id, enabled, mode, leading_system, comments_enabled, labels_enabled, custom_fields_enabled, create_from_jira, create_to_jira, jql_filter, label_prefix, mention_bridge_enabled, outbound_issue_type, status_map, field_map, tag_rules, cycle_interval_seconds, jira_cursor, local_cursor, health, created_at, updated_at, service_account_id
 `
 
 type CreateJiraConnectionParams struct {
@@ -158,6 +198,7 @@ func (q *Queries) CreateJiraConnection(ctx context.Context, arg CreateJiraConnec
 		&i.Health,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ServiceAccountID,
 	)
 	return i, err
 }
@@ -211,6 +252,19 @@ func (q *Queries) CreateJiraLink(ctx context.Context, arg CreateJiraLinkParams) 
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const deleteJiraCommentLinksByConnection = `-- name: DeleteJiraCommentLinksByConnection :execrows
+DELETE FROM jira_comment_link
+WHERE connection_id = $1
+`
+
+func (q *Queries) DeleteJiraCommentLinksByConnection(ctx context.Context, connectionID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteJiraCommentLinksByConnection, connectionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deleteJiraConnection = `-- name: DeleteJiraConnection :exec
@@ -318,8 +372,41 @@ func (q *Queries) FindIssueIDByJiraMarker(ctx context.Context, arg FindIssueIDBy
 	return id, err
 }
 
+const getJiraCommentLinkByJiraID = `-- name: GetJiraCommentLinkByJiraID :one
+
+SELECT id, connection_id, workspace_id, issue_id, comment_id, jira_comment_id, origin, marker, state, created_at, updated_at FROM jira_comment_link
+WHERE connection_id = $1 AND jira_comment_id = $2
+`
+
+type GetJiraCommentLinkByJiraIDParams struct {
+	ConnectionID  pgtype.UUID `json:"connection_id"`
+	JiraCommentID string      `json:"jira_comment_id"`
+}
+
+// =====================
+// Jira Comment Link
+// =====================
+func (q *Queries) GetJiraCommentLinkByJiraID(ctx context.Context, arg GetJiraCommentLinkByJiraIDParams) (JiraCommentLink, error) {
+	row := q.db.QueryRow(ctx, getJiraCommentLinkByJiraID, arg.ConnectionID, arg.JiraCommentID)
+	var i JiraCommentLink
+	err := row.Scan(
+		&i.ID,
+		&i.ConnectionID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.CommentID,
+		&i.JiraCommentID,
+		&i.Origin,
+		&i.Marker,
+		&i.State,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getJiraConnectionByID = `-- name: GetJiraConnectionByID :one
-SELECT id, workspace_id, site_url, site_host, project_key, project_id, email, token_encrypted, connected_by_id, enabled, mode, leading_system, comments_enabled, labels_enabled, custom_fields_enabled, create_from_jira, create_to_jira, jql_filter, label_prefix, mention_bridge_enabled, outbound_issue_type, status_map, field_map, tag_rules, cycle_interval_seconds, jira_cursor, local_cursor, health, created_at, updated_at FROM jira_connection
+SELECT id, workspace_id, site_url, site_host, project_key, project_id, email, token_encrypted, connected_by_id, enabled, mode, leading_system, comments_enabled, labels_enabled, custom_fields_enabled, create_from_jira, create_to_jira, jql_filter, label_prefix, mention_bridge_enabled, outbound_issue_type, status_map, field_map, tag_rules, cycle_interval_seconds, jira_cursor, local_cursor, health, created_at, updated_at, service_account_id FROM jira_connection
 WHERE id = $1
 `
 
@@ -357,12 +444,13 @@ func (q *Queries) GetJiraConnectionByID(ctx context.Context, id pgtype.UUID) (Ji
 		&i.Health,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ServiceAccountID,
 	)
 	return i, err
 }
 
 const getJiraConnectionBySiteProject = `-- name: GetJiraConnectionBySiteProject :one
-SELECT id, workspace_id, site_url, site_host, project_key, project_id, email, token_encrypted, connected_by_id, enabled, mode, leading_system, comments_enabled, labels_enabled, custom_fields_enabled, create_from_jira, create_to_jira, jql_filter, label_prefix, mention_bridge_enabled, outbound_issue_type, status_map, field_map, tag_rules, cycle_interval_seconds, jira_cursor, local_cursor, health, created_at, updated_at FROM jira_connection
+SELECT id, workspace_id, site_url, site_host, project_key, project_id, email, token_encrypted, connected_by_id, enabled, mode, leading_system, comments_enabled, labels_enabled, custom_fields_enabled, create_from_jira, create_to_jira, jql_filter, label_prefix, mention_bridge_enabled, outbound_issue_type, status_map, field_map, tag_rules, cycle_interval_seconds, jira_cursor, local_cursor, health, created_at, updated_at, service_account_id FROM jira_connection
 WHERE site_host = $1 AND project_key = $2
 `
 
@@ -407,13 +495,14 @@ func (q *Queries) GetJiraConnectionBySiteProject(ctx context.Context, arg GetJir
 		&i.Health,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ServiceAccountID,
 	)
 	return i, err
 }
 
 const getJiraConnectionByWorkspace = `-- name: GetJiraConnectionByWorkspace :one
 
-SELECT id, workspace_id, site_url, site_host, project_key, project_id, email, token_encrypted, connected_by_id, enabled, mode, leading_system, comments_enabled, labels_enabled, custom_fields_enabled, create_from_jira, create_to_jira, jql_filter, label_prefix, mention_bridge_enabled, outbound_issue_type, status_map, field_map, tag_rules, cycle_interval_seconds, jira_cursor, local_cursor, health, created_at, updated_at FROM jira_connection
+SELECT id, workspace_id, site_url, site_host, project_key, project_id, email, token_encrypted, connected_by_id, enabled, mode, leading_system, comments_enabled, labels_enabled, custom_fields_enabled, create_from_jira, create_to_jira, jql_filter, label_prefix, mention_bridge_enabled, outbound_issue_type, status_map, field_map, tag_rules, cycle_interval_seconds, jira_cursor, local_cursor, health, created_at, updated_at, service_account_id FROM jira_connection
 WHERE workspace_id = $1
 `
 
@@ -454,6 +543,7 @@ func (q *Queries) GetJiraConnectionByWorkspace(ctx context.Context, workspaceID 
 		&i.Health,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ServiceAccountID,
 	)
 	return i, err
 }
@@ -613,7 +703,7 @@ func (q *Queries) ListDueDirtyJiraLinks(ctx context.Context, arg ListDueDirtyJir
 }
 
 const listEnabledJiraConnections = `-- name: ListEnabledJiraConnections :many
-SELECT id, workspace_id, site_url, site_host, project_key, project_id, email, token_encrypted, connected_by_id, enabled, mode, leading_system, comments_enabled, labels_enabled, custom_fields_enabled, create_from_jira, create_to_jira, jql_filter, label_prefix, mention_bridge_enabled, outbound_issue_type, status_map, field_map, tag_rules, cycle_interval_seconds, jira_cursor, local_cursor, health, created_at, updated_at FROM jira_connection
+SELECT id, workspace_id, site_url, site_host, project_key, project_id, email, token_encrypted, connected_by_id, enabled, mode, leading_system, comments_enabled, labels_enabled, custom_fields_enabled, create_from_jira, create_to_jira, jql_filter, label_prefix, mention_bridge_enabled, outbound_issue_type, status_map, field_map, tag_rules, cycle_interval_seconds, jira_cursor, local_cursor, health, created_at, updated_at, service_account_id FROM jira_connection
 WHERE enabled = true
 ORDER BY created_at ASC, id ASC
 `
@@ -657,6 +747,45 @@ func (q *Queries) ListEnabledJiraConnections(ctx context.Context) ([]JiraConnect
 			&i.JiraCursor,
 			&i.LocalCursor,
 			&i.Health,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ServiceAccountID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listJiraCommentLinksByIssue = `-- name: ListJiraCommentLinksByIssue :many
+SELECT id, connection_id, workspace_id, issue_id, comment_id, jira_comment_id, origin, marker, state, created_at, updated_at FROM jira_comment_link
+WHERE issue_id = $1
+ORDER BY created_at ASC
+`
+
+func (q *Queries) ListJiraCommentLinksByIssue(ctx context.Context, issueID pgtype.UUID) ([]JiraCommentLink, error) {
+	rows, err := q.db.Query(ctx, listJiraCommentLinksByIssue, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []JiraCommentLink{}
+	for rows.Next() {
+		var i JiraCommentLink
+		if err := rows.Scan(
+			&i.ID,
+			&i.ConnectionID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.CommentID,
+			&i.JiraCommentID,
+			&i.Origin,
+			&i.Marker,
+			&i.State,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -871,7 +1000,7 @@ SET enabled = $2,
     cycle_interval_seconds = $17,
     updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, site_url, site_host, project_key, project_id, email, token_encrypted, connected_by_id, enabled, mode, leading_system, comments_enabled, labels_enabled, custom_fields_enabled, create_from_jira, create_to_jira, jql_filter, label_prefix, mention_bridge_enabled, outbound_issue_type, status_map, field_map, tag_rules, cycle_interval_seconds, jira_cursor, local_cursor, health, created_at, updated_at
+RETURNING id, workspace_id, site_url, site_host, project_key, project_id, email, token_encrypted, connected_by_id, enabled, mode, leading_system, comments_enabled, labels_enabled, custom_fields_enabled, create_from_jira, create_to_jira, jql_filter, label_prefix, mention_bridge_enabled, outbound_issue_type, status_map, field_map, tag_rules, cycle_interval_seconds, jira_cursor, local_cursor, health, created_at, updated_at, service_account_id
 `
 
 type UpdateJiraConnectionConfigParams struct {
@@ -948,6 +1077,7 @@ func (q *Queries) UpdateJiraConnectionConfig(ctx context.Context, arg UpdateJira
 		&i.Health,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ServiceAccountID,
 	)
 	return i, err
 }
@@ -982,6 +1112,22 @@ type UpdateJiraConnectionHealthParams struct {
 
 func (q *Queries) UpdateJiraConnectionHealth(ctx context.Context, arg UpdateJiraConnectionHealthParams) error {
 	_, err := q.db.Exec(ctx, updateJiraConnectionHealth, arg.ID, arg.Health)
+	return err
+}
+
+const updateJiraConnectionServiceAccount = `-- name: UpdateJiraConnectionServiceAccount :exec
+UPDATE jira_connection
+SET service_account_id = $2, updated_at = now()
+WHERE id = $1
+`
+
+type UpdateJiraConnectionServiceAccountParams struct {
+	ID               pgtype.UUID `json:"id"`
+	ServiceAccountID string      `json:"service_account_id"`
+}
+
+func (q *Queries) UpdateJiraConnectionServiceAccount(ctx context.Context, arg UpdateJiraConnectionServiceAccountParams) error {
+	_, err := q.db.Exec(ctx, updateJiraConnectionServiceAccount, arg.ID, arg.ServiceAccountID)
 	return err
 }
 

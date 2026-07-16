@@ -496,3 +496,72 @@ func (c *Client) SearchJQLIDs(ctx context.Context, jql string, limit int) ([]str
 	}
 	return ids, page.IsLast, nil
 }
+
+// RemoteComment is one Jira comment observation. Restricted comments carry
+// Restricted=true and an EMPTY body: visibility is evaluated before the body
+// is ever decoded (fail-closed, FR-18).
+type RemoteComment struct {
+	ID         string
+	AuthorID   string
+	AuthorName string
+	BodyADF    json.RawMessage
+	Restricted bool
+	Created    time.Time
+}
+
+// ListComments pages through an issue's comments in creation order.
+func (c *Client) ListComments(ctx context.Context, issueID string) ([]RemoteComment, error) {
+	var all []RemoteComment
+	startAt := 0
+	for {
+		q := url.Values{
+			"startAt":    {strconv.Itoa(startAt)},
+			"maxResults": {"100"},
+			"orderBy":    {"created"},
+		}
+		var page struct {
+			Comments []struct {
+				ID     string `json:"id"`
+				Author struct {
+					AccountID   string `json:"accountId"`
+					DisplayName string `json:"displayName"`
+				} `json:"author"`
+				Body       json.RawMessage `json:"body"`
+				Visibility *struct {
+					Type  string `json:"type"`
+					Value string `json:"value"`
+				} `json:"visibility"`
+				JSDPublic *bool  `json:"jsdPublic"`
+				Created   string `json:"created"`
+			} `json:"comments"`
+			StartAt    int `json:"startAt"`
+			MaxResults int `json:"maxResults"`
+			Total      int `json:"total"`
+		}
+		if err := c.do(ctx, http.MethodGet, "/rest/api/3/issue/"+url.PathEscape(issueID)+"/comment", q, nil, &page); err != nil {
+			return nil, err
+		}
+		for _, rc := range page.Comments {
+			out := RemoteComment{
+				ID:         rc.ID,
+				AuthorID:   rc.Author.AccountID,
+				AuthorName: rc.Author.DisplayName,
+			}
+			// Fail-closed privacy gate BEFORE the body is looked at: any
+			// visibility restriction, or a JSM-internal flag, drops content.
+			if rc.Visibility != nil || (rc.JSDPublic != nil && !*rc.JSDPublic) {
+				out.Restricted = true
+			} else {
+				out.BodyADF = rc.Body
+			}
+			if ts, perr := time.Parse(jiraTimeLayout, rc.Created); perr == nil {
+				out.Created = ts
+			}
+			all = append(all, out)
+		}
+		startAt += len(page.Comments)
+		if startAt >= page.Total || len(page.Comments) == 0 {
+			return all, nil
+		}
+	}
+}

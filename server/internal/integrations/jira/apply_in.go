@@ -108,7 +108,16 @@ func (w *Worker) importIssue(ctx context.Context, conn db.JiraConnection, sm Sta
 		})
 	}
 
-	return w.finalizeImport(ctx, link, res.Issue.ID, obs, sm)
+	if err := w.finalizeImport(ctx, link, res.Issue.ID, obs, sm); err != nil {
+		return err
+	}
+	link.IssueID = res.Issue.ID
+	if cerr := w.mirrorComments(ctx, conn, link, cycleID); cerr != nil {
+		_ = w.Journal.Record(ctx, conn, cycleID, JournalItemDirty, res.Issue.ID, obs.Key, map[string]any{
+			"error": redactError(cerr), "at": "import_comments",
+		})
+	}
+	return nil
 }
 
 // finalizeImport seeds the two-sided snapshots from the imported values: both
@@ -348,4 +357,102 @@ func settingsFromConnection(conn db.JiraConnection) Settings {
 		TagRules:             conn.TagRules,
 		CycleIntervalSeconds: conn.CycleIntervalSeconds,
 	}
+}
+
+// --- Inbound comments (Story 3.1) ---
+
+// mirrorComments pulls new public Jira comments onto the Multica twin,
+// exactly once (identity = jira comment id in jira_comment_link). Restricted
+// comments were already stripped of their bodies by the client (fail-closed,
+// FR-18); here they only count into Health. Service-account comments are
+// never mirrored as content — they are sync's own writes (actor filter),
+// scanned for outbound intent markers by the Epic-3 outbound story.
+func (w *Worker) mirrorComments(ctx context.Context, conn db.JiraConnection, link db.JiraLink, cycleID pgtype.UUID) error {
+	if !conn.CommentsEnabled {
+		return nil
+	}
+	if dir := EffectiveDirection(settingsFromConnection(conn), FacetComments); dir != DirPull && dir != DirTwoWay {
+		return nil
+	}
+	client, err := w.Svc.ClientFor(conn)
+	if err != nil {
+		return err
+	}
+	comments, err := client.ListComments(ctx, link.JiraIssueID)
+	if err != nil {
+		return err
+	}
+	for _, rc := range comments {
+		if _, lerr := w.Q.GetJiraCommentLinkByJiraID(ctx, db.GetJiraCommentLinkByJiraIDParams{
+			ConnectionID: conn.ID, JiraCommentID: rc.ID,
+		}); lerr == nil {
+			continue // already mirrored (or ours)
+		} else if !errors.Is(lerr, pgx.ErrNoRows) {
+			return lerr
+		}
+
+		if rc.Restricted {
+			_ = w.Journal.Record(ctx, conn, cycleID, JournalRestrictedCommentDropped, link.IssueID, link.JiraKey, map[string]any{
+				"jira_comment_id": rc.ID,
+			})
+			// Record the identity so the drop is decided once, not per cycle.
+			if err := w.recordCommentLink(ctx, conn, link, pgtype.UUID{}, rc.ID); err != nil {
+				return err
+			}
+			continue
+		}
+		if rc.AuthorID != "" && rc.AuthorID == conn.ServiceAccountID {
+			// Sync's own Jira comment observed back: record identity only
+			// (adopt-scan for outbound intents lands with Story 3.2).
+			if err := w.recordCommentLink(ctx, conn, link, pgtype.UUID{}, rc.ID); err != nil {
+				return err
+			}
+			continue
+		}
+
+		body, _ := ADFToMarkdown(rc.BodyADF)
+		author := rc.AuthorName
+		if author == "" {
+			author = "unknown"
+		}
+		content := fmt.Sprintf("**From Jira — %s**\n\n%s", author, body)
+
+		tx, err := w.Pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		qtx := w.Q.WithTx(tx)
+		comment, cerr := qtx.CreateComment(ctx, db.CreateCommentParams{
+			IssueID:     link.IssueID,
+			WorkspaceID: conn.WorkspaceID,
+			AuthorType:  "system",
+			AuthorID:    pgtype.UUID{Valid: true}, // zero UUID: platform system actor
+			Content:     content,
+			Type:        "comment",
+		})
+		if cerr == nil {
+			_, cerr = qtx.CreateJiraCommentLinkInbound(ctx, db.CreateJiraCommentLinkInboundParams{
+				ConnectionID: conn.ID, WorkspaceID: conn.WorkspaceID,
+				IssueID: link.IssueID, CommentID: comment.ID, JiraCommentID: rc.ID,
+			})
+		}
+		if cerr != nil {
+			_ = tx.Rollback(ctx)
+			return fmt.Errorf("mirror comment %s: %w", rc.ID, cerr)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// recordCommentLink stores an identity-only row (restricted or self-authored
+// comments): decided once, never re-examined, never mirrored.
+func (w *Worker) recordCommentLink(ctx context.Context, conn db.JiraConnection, link db.JiraLink, commentID pgtype.UUID, jiraCommentID string) error {
+	_, err := w.Q.CreateJiraCommentLinkInbound(ctx, db.CreateJiraCommentLinkInboundParams{
+		ConnectionID: conn.ID, WorkspaceID: conn.WorkspaceID,
+		IssueID: link.IssueID, CommentID: commentID, JiraCommentID: jiraCommentID,
+	})
+	return err
 }

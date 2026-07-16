@@ -471,3 +471,89 @@ func TestDirtyLadderIsolatesPoisonAndRecovers(t *testing.T) {
 		t.Fatalf("recovered link must clear dirty: %+v", link13)
 	}
 }
+
+// --- Story 3.1: inbound comments ---
+
+func TestInboundCommentsMirrorExactlyOnceWithPrivacyAndActorFilter(t *testing.T) {
+	f := newFakeJira(t)
+	now := time.Now().UTC()
+	f.mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"issues":[%s],"isLast":true}`,
+			searchIssueWithCategory("GAME-20", now, "100", "new"))
+	})
+	f.mux.HandleFunc("/rest/api/3/issue/id-GAME-20/comment", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"comments":[
+			{"id":"c-1","author":{"accountId":"acc-human","displayName":"Marco"},
+			 "body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"public one"}]}]},
+			 "created":%q},
+			{"id":"c-2","author":{"accountId":"acc-human","displayName":"Marco"},
+			 "visibility":{"type":"role","value":"Developers"},
+			 "body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"SECRET"}]}]},
+			 "created":%q},
+			{"id":"c-3","author":{"accountId":"acc-bot","displayName":"Sync Bot"},
+			 "body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"our own mirror"}]}]},
+			 "created":%q}
+		],"startAt":0,"maxResults":100,"total":3}`,
+			now.Format(jiraTimeLayout), now.Format(jiraTimeLayout), now.Format(jiraTimeLayout))
+	})
+	w, conn, q := importFixture(t, f)
+	ctx := context.Background()
+
+	// The actor filter keys off the stored service-account id.
+	if err := q.UpdateJiraConnectionServiceAccount(ctx, db.UpdateJiraConnectionServiceAccountParams{
+		ID: conn.ID, ServiceAccountID: "acc-bot",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	conn, _ = q.GetJiraConnectionByID(ctx, conn.ID)
+
+	if _, err := w.runCycle(ctx, conn); err != nil {
+		t.Fatalf("cycle: %v", err)
+	}
+	link, _ := q.GetJiraLinkByJiraIssueID(ctx, db.GetJiraLinkByJiraIssueIDParams{ConnectionID: conn.ID, JiraIssueID: "id-GAME-20"})
+
+	rows, err := q.ListCommentsForIssue(ctx, db.ListCommentsForIssueParams{IssueID: link.IssueID, WorkspaceID: conn.WorkspaceID, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mirrored []string
+	for _, c := range rows {
+		if c.AuthorType == "system" && strings.Contains(c.Content, "From Jira") {
+			mirrored = append(mirrored, c.Content)
+		}
+		if strings.Contains(c.Content, "SECRET") {
+			t.Fatalf("restricted comment content leaked: %s", c.Content)
+		}
+		if strings.Contains(c.Content, "our own mirror") {
+			t.Fatalf("service-account comment must never mirror back (echo): %s", c.Content)
+		}
+	}
+	if len(mirrored) != 1 || !strings.Contains(mirrored[0], "Marco") || !strings.Contains(mirrored[0], "public one") {
+		t.Fatalf("want exactly one attributed mirror, got %v", mirrored)
+	}
+
+	journal, _ := q.ListJiraJournalRecent(ctx, db.ListJiraJournalRecentParams{ConnectionID: conn.ID, Limit: 30})
+	droppedLogged := false
+	for _, j := range journal {
+		if j.Kind == string(JournalRestrictedCommentDropped) {
+			droppedLogged = true
+		}
+	}
+	if !droppedLogged {
+		t.Fatal("restricted drop must journal")
+	}
+
+	// Replay: identical window → zero new comments (idempotent by identity).
+	c2, _ := q.GetJiraConnectionByID(ctx, conn.ID)
+	_ = q.UpdateJiraConnectionCursors(ctx, db.UpdateJiraConnectionCursorsParams{
+		ID: conn.ID, JiraCursor: pgtype.Timestamptz{Time: now.Add(-10 * time.Minute), Valid: true}, LocalCursor: c2.LocalCursor,
+	})
+	c2, _ = q.GetJiraConnectionByID(ctx, conn.ID)
+	if _, err := w.runCycle(ctx, c2); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	rows2, _ := q.ListCommentsForIssue(ctx, db.ListCommentsForIssueParams{IssueID: link.IssueID, WorkspaceID: conn.WorkspaceID, Limit: 100})
+	if len(rows2) != len(rows) {
+		t.Fatalf("replay must not duplicate comments: %d vs %d", len(rows2), len(rows))
+	}
+}

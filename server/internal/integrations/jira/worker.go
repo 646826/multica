@@ -214,6 +214,11 @@ func (w *Worker) cycleBody(ctx context.Context, conn db.JiraConnection, cycleID 
 		case link.State == "ok":
 			seenLinked = append(seenLinked, obs.ID)
 			w.updateIssue(ctx, conn, sm, fieldRows, link, obs, cycleID)
+			if cerr := w.mirrorComments(ctx, conn, link, cycleID); cerr != nil {
+				_ = w.Journal.Record(ctx, conn, cycleID, JournalItemDirty, link.IssueID, obs.Key, map[string]any{
+					"error": redactError(cerr), "at": "comments",
+				})
+			}
 		case link.State == "dormant" || link.State == "orphaned":
 			// Re-entering scope resumes the SAME Link (FR-11/FR-14) — the
 			// pair picks up where it left off, no duplicate mirror.

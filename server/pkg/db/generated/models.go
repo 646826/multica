@@ -645,6 +645,20 @@ type IssueToLabel struct {
 	LabelID pgtype.UUID `json:"label_id"`
 }
 
+type JiraCommentLink struct {
+	ID            pgtype.UUID        `json:"id"`
+	ConnectionID  pgtype.UUID        `json:"connection_id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	CommentID     pgtype.UUID        `json:"comment_id"`
+	JiraCommentID string             `json:"jira_comment_id"`
+	Origin        string             `json:"origin"`
+	Marker        string             `json:"marker"`
+	State         string             `json:"state"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
 type JiraConnection struct {
 	ID                   pgtype.UUID        `json:"id"`
 	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
@@ -676,6 +690,7 @@ type JiraConnection struct {
 	Health               []byte             `json:"health"`
 	CreatedAt            pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+	ServiceAccountID     string             `json:"service_account_id"`
 }
 
 type JiraJournal struct {
