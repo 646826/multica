@@ -1559,3 +1559,12 @@ export const JiraConnectionEnvelopeSchema = z
     connection: JiraConnectionSchema.nullable(),
   })
   .loose();
+
+export const IssueJiraLinkSchema = z
+  .object({
+    linked: z.boolean(),
+    jira_key: z.string().optional(),
+    url: z.string().optional(),
+    state: z.string().optional(),
+  })
+  .loose();

@@ -131,6 +131,7 @@ import type {
   SlackInstallation,
   ListSlackInstallationsResponse,
   JiraConnection,
+  IssueJiraLink,
   JiraConnectionEnvelope,
   ConnectJiraPayload,
   UpdateJiraConnectionPayload,
@@ -261,6 +262,7 @@ import {
   EMPTY_LIST_LABELS_RESPONSE,
   EMPTY_RESOURCE_LABELS_RESPONSE,
   JiraConnectionEnvelopeSchema,
+  IssueJiraLinkSchema,
 } from "./schemas";
 
 /** Identifies the calling client to the server.
@@ -2726,6 +2728,13 @@ export class ApiClient {
     return this.fetch(`/api/workspaces/${workspaceId}/jira/projects`, {
       method: "POST",
       body: JSON.stringify(payload ?? {}),
+    });
+  }
+
+  async getIssueJiraLink(issueId: string): Promise<IssueJiraLink> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/jira-link`);
+    return parseWithFallback(raw, IssueJiraLinkSchema, { linked: false } as IssueJiraLink, {
+      endpoint: "GET /api/issues/:id/jira-link",
     });
   }
 

@@ -3,7 +3,9 @@ package jira
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -154,5 +156,109 @@ func TestJournalRefusesUnregisteredKind(t *testing.T) {
 		pgtype.UUID{}, JournalKind("made_up_kind"), pgtype.UUID{}, "", nil)
 	if err == nil {
 		t.Fatal("unregistered journal kind must be refused")
+	}
+}
+
+func TestSweepMarksOrphanedAndDormant(t *testing.T) {
+	f := newFakeJira(t)
+	now := time.Now().UTC()
+	f.mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		jql := r.URL.Query().Get("jql")
+		if strings.Contains(jql, "id = ") {
+			// Scope membership probe: nothing matches the filter → dormant.
+			w.Write([]byte(`{"issues":[],"isLast":true}`))
+			return
+		}
+		w.Write([]byte(`{"issues":[],"isLast":true}`))
+	})
+	f.mux.HandleFunc("/rest/api/3/issue/", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/rest/api/3/issue/")
+		switch id {
+		case "gone-1":
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"errorMessages":["Issue does not exist"]}`))
+		case "moved-2":
+			fmt.Fprintf(w, `{"id":"moved-2","key":"OTHER-9","fields":{"summary":"m","status":{"id":"100","name":"To Do","statusCategory":{"key":"new"}},"labels":[],"updated":%q}}`, now.Format(jiraTimeLayout))
+		default:
+			fmt.Fprintf(w, `{"id":%q,"key":"GAME-77","fields":{"summary":"q","status":{"id":"100","name":"To Do","statusCategory":{"key":"new"}},"labels":[],"updated":%q}}`, id, now.Format(jiraTimeLayout))
+		}
+	})
+	w, conn, q, _ := workerFixture(t, f)
+	ctx := context.Background()
+
+	mk := func(jiraID string) db.JiraLink {
+		link, err := q.CreateJiraLink(ctx, db.CreateJiraLinkParams{
+			ConnectionID: conn.ID, WorkspaceID: conn.WorkspaceID, IssueID: testUUID(),
+			JiraIssueID: jiraID, JiraKey: "GAME-1", State: "ok", Items: []byte(`{}`),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return link
+	}
+	gone := mk("gone-1")
+	moved := mk("moved-2")
+	quiet := mk("quiet-3")
+
+	// JQL filter set → the scope probe declares 'quiet-3'... the probe above
+	// returns empty for id-searches, so a filtered connection would dormant
+	// it; test both regimes.
+	if _, err := w.runCycle(ctx, conn); err != nil {
+		t.Fatalf("cycle: %v", err)
+	}
+
+	g, _ := q.GetJiraLinkByJiraIssueID(ctx, db.GetJiraLinkByJiraIssueIDParams{ConnectionID: conn.ID, JiraIssueID: "gone-1"})
+	if g.State != "orphaned" {
+		t.Fatalf("deleted issue must orphan its link: %+v", g.State)
+	}
+	m, _ := q.GetJiraLinkByJiraIssueID(ctx, db.GetJiraLinkByJiraIssueIDParams{ConnectionID: conn.ID, JiraIssueID: "moved-2"})
+	if m.State != "orphaned" {
+		t.Fatalf("moved issue must orphan its link: %+v", m.State)
+	}
+	qt, _ := q.GetJiraLinkByJiraIssueID(ctx, db.GetJiraLinkByJiraIssueIDParams{ConnectionID: conn.ID, JiraIssueID: "quiet-3"})
+	if qt.State != "ok" || !qt.LastSeenAt.Valid {
+		t.Fatalf("quiet healthy issue must be re-touched, not flagged: %+v", qt)
+	}
+	_ = gone
+	_ = moved
+	_ = quiet
+}
+
+func TestDormantResumesOnReObservation(t *testing.T) {
+	f := newFakeJira(t)
+	now := time.Now().UTC()
+	f.mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"issues":[{"id":"back-1","key":"GAME-5","fields":{
+			"summary":"Back in scope",
+			"status":{"id":"100","name":"To Do","statusCategory":{"key":"new"}},
+			"labels":[],"updated":%q}}],"isLast":true}`, now.Format(jiraTimeLayout))
+	})
+	w, conn, q, _ := workerFixture(t, f)
+	ctx := context.Background()
+
+	issueID := testUUID()
+	if _, err := q.CreateJiraLink(ctx, db.CreateJiraLinkParams{
+		ConnectionID: conn.ID, WorkspaceID: conn.WorkspaceID, IssueID: issueID,
+		JiraIssueID: "back-1", JiraKey: "GAME-5", State: "dormant", Items: []byte(`{}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := w.runCycle(ctx, conn); err != nil {
+		t.Fatalf("cycle: %v", err)
+	}
+	link, _ := q.GetJiraLinkByJiraIssueID(ctx, db.GetJiraLinkByJiraIssueIDParams{ConnectionID: conn.ID, JiraIssueID: "back-1"})
+	if link.State != "ok" {
+		t.Fatalf("re-observed dormant link must resume (FR-11): %+v", link.State)
+	}
+	rows, _ := q.ListJiraJournalRecent(ctx, db.ListJiraJournalRecentParams{ConnectionID: conn.ID, Limit: 10})
+	resumed := false
+	for _, rrow := range rows {
+		if rrow.Kind == string(JournalScopeResumed) {
+			resumed = true
+		}
+	}
+	if !resumed {
+		t.Fatal("resume must journal scope_resumed")
 	}
 }

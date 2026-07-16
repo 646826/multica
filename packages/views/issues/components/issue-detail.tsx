@@ -66,6 +66,7 @@ import { collectThreadReplies, deriveThreadResolution } from "./thread-utils";
 import { IssueAgentHeaderChip } from "./issue-agent-header-chip";
 import { ExecutionLogSection } from "./execution-log-section";
 import { PullRequestList } from "./pull-request-list";
+import { JiraLinkBadge } from "./jira-link-badge";
 import { useGitHubSettings } from "@multica/core/github";
 import { useQuery } from "@tanstack/react-query";
 import { useAuthStore } from "@multica/core/auth";
@@ -1789,6 +1790,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           {pullRequestsOpen && <div className="pl-2"><PullRequestList issueId={id} /></div>}
         </div>
       )}
+
+      <JiraLinkBadge issueId={id} />
 
       {/* Details */}
       <div>

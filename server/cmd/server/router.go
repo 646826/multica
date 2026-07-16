@@ -1095,6 +1095,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Put("/properties/{propertyId}", h.SetIssueProperty)
 					r.Delete("/properties/{propertyId}", h.DeleteIssueProperty)
 					r.Get("/pull-requests", h.ListPullRequestsForIssue)
+					// Linked Jira issue badge (native sync, FR-13).
+					r.Get("/jira-link", h.GetIssueJiraLink)
 				})
 			})
 

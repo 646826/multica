@@ -39,6 +39,10 @@ const (
 	// Per-item transient failures (dirty ladder, AD-2) with recovery pairing.
 	JournalItemDirty     JournalKind = "item_dirty"
 	JournalItemRecovered JournalKind = "item_recovered"
+	// Scope & identity lifecycle (FR-11/FR-14).
+	JournalScopeDormant JournalKind = "scope_dormant"
+	JournalScopeResumed JournalKind = "scope_resumed"
+	JournalLinkOrphaned JournalKind = "link_orphaned"
 )
 
 // journalKinds is the registry; Record refuses kinds outside it.
@@ -53,6 +57,9 @@ var journalKinds = map[JournalKind]bool{
 	JournalImportMarkerFailed: true,
 	JournalItemDirty:          true,
 	JournalItemRecovered:      true,
+	JournalScopeDormant:       true,
+	JournalScopeResumed:       true,
+	JournalLinkOrphaned:       true,
 }
 
 // Journal retention bounds (operational envelope): whichever prunes more.

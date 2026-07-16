@@ -85,3 +85,10 @@ export interface JiraProject {
 export interface ListJiraProjectsResponse {
   projects: JiraProject[];
 }
+
+export interface IssueJiraLink {
+  linked: boolean;
+  jira_key?: string;
+  url?: string;
+  state?: string; // ok | pending | dormant | orphaned | retrying (server-driven)
+}

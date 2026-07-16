@@ -437,3 +437,36 @@ func (h *Handler) journalJira(r *http.Request, conn db.JiraConnection, kind jira
 		Detail:       payload,
 	})
 }
+
+// GetIssueJiraLink powers the issue-page badge (FR-13): the linked Jira key,
+// deep link, and sync state for one issue. Member-visible; empty state is a
+// 200 with linked:false so the UI needs no error branch.
+func (h *Handler) GetIssueJiraLink(w http.ResponseWriter, r *http.Request) {
+	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	link, err := h.Queries.GetJiraLinkByIssueID(r.Context(), issue.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeJSON(w, http.StatusOK, map[string]any{"linked": false})
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load jira link")
+		return
+	}
+	conn, err := h.Queries.GetJiraConnectionByID(r.Context(), link.ConnectionID)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"linked": false})
+		return
+	}
+	state := link.State
+	if link.Dirty {
+		state = "retrying"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"linked":   true,
+		"jira_key": link.JiraKey,
+		"url":      conn.SiteUrl + "/browse/" + link.JiraKey,
+		"state":    state,
+	})
+}

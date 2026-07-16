@@ -521,5 +521,8 @@
     "row_backlog_hint": "智能体保持暂停",
     "row_todo_label": "Todo",
     "row_todo_hint": "启动智能体"
+  },
+  "jira_link": {
+    "open_in_jira": "在 Jira 中打开"
   }
 }

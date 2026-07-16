@@ -472,3 +472,27 @@ func (c *Client) GetIssue(ctx context.Context, issueID string, fieldIDs []string
 	}
 	return parseRemoteIssue(payload.ID, payload.Key, payload.Fields, fieldIDs), nil
 }
+
+// SearchJQLIDs runs an arbitrary bounded JQL returning only issue ids (the
+// scope-membership check for the unseen sweep).
+func (c *Client) SearchJQLIDs(ctx context.Context, jql string, limit int) ([]string, bool, error) {
+	q := url.Values{
+		"jql":        {jql},
+		"fields":     {"id"},
+		"maxResults": {strconv.Itoa(limit)},
+	}
+	var page struct {
+		Issues []struct {
+			ID string `json:"id"`
+		} `json:"issues"`
+		IsLast bool `json:"isLast"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/rest/api/3/search/jql", q, nil, &page); err != nil {
+		return nil, false, err
+	}
+	ids := make([]string, 0, len(page.Issues))
+	for _, it := range page.Issues {
+		ids = append(ids, it.ID)
+	}
+	return ids, page.IsLast, nil
+}

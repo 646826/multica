@@ -155,6 +155,7 @@ export type {
   UpdateJiraConnectionPayload,
   JiraProject,
   ListJiraProjectsResponse,
+  IssueJiraLink,
 } from "./jira";
 export type {
   Autopilot,

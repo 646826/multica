@@ -5,8 +5,10 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -212,8 +214,18 @@ func (w *Worker) cycleBody(ctx context.Context, conn db.JiraConnection, cycleID 
 		case link.State == "ok":
 			seenLinked = append(seenLinked, obs.ID)
 			w.updateIssue(ctx, conn, sm, fieldRows, link, obs, cycleID)
-		default:
-			// dormant/orphaned pairs are fully suspended (FR-11/FR-14).
+		case link.State == "dormant" || link.State == "orphaned":
+			// Re-entering scope resumes the SAME Link (FR-11/FR-14) — the
+			// pair picks up where it left off, no duplicate mirror.
+			if err := w.Q.SetJiraLinkState(ctx, db.SetJiraLinkStateParams{ID: link.ID, State: "ok"}); err != nil {
+				return client.Requests(), err
+			}
+			_ = w.Journal.Record(ctx, conn, cycleID, JournalScopeResumed, link.IssueID, obs.Key, map[string]any{
+				"previous_state": link.State,
+			})
+			seenLinked = append(seenLinked, obs.ID)
+			link.State = "ok"
+			w.updateIssue(ctx, conn, sm, fieldRows, link, obs, cycleID)
 		}
 	}
 	// Dirty rescan (AD-2): due retries re-enter the observe set with a fresh
@@ -261,6 +273,10 @@ func (w *Worker) cycleBody(ctx context.Context, conn db.JiraConnection, cycleID 
 		}); err != nil {
 			return client.Requests(), err
 		}
+	}
+
+	if err := w.sweepUnseenLinks(ctx, client, conn, cycleID); err != nil {
+		return client.Requests(), err
 	}
 
 	// Record: the Cursor advances to the newest applied observation; an
@@ -351,4 +367,79 @@ func randomUUIDBytes() [16]byte {
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
 	return b
+}
+
+// sweepUnseenLinks verifies Links that have not been observed for a prolonged
+// window (FR-11/FR-14): deleted or moved-away issues become orphaned, issues
+// filtered out by the JQL become dormant, and quiet-but-healthy pairs are
+// re-touched. Bounded per cycle so the verification budget stays fixed.
+const (
+	unseenThreshold = 24 * time.Hour
+	sweepBatch      = 20
+)
+
+func (w *Worker) sweepUnseenLinks(ctx context.Context, client *Client, conn db.JiraConnection, cycleID pgtype.UUID) error {
+	cutoff := pgtype.Timestamptz{Time: w.now().Add(-unseenThreshold), Valid: true}
+	links, err := w.Q.ListJiraLinksUnseenSince(ctx, db.ListJiraLinksUnseenSinceParams{
+		ConnectionID: conn.ID, LastSeenAt: cutoff, Limit: sweepBatch,
+	})
+	if err != nil {
+		return err
+	}
+	var healthy []string
+	for _, link := range links {
+		remote, gerr := client.GetIssue(ctx, link.JiraIssueID, nil)
+		if gerr != nil {
+			var apiErr *APIError
+			if errors.As(gerr, &apiErr) && apiErr.Status == 404 {
+				if serr := w.Q.SetJiraLinkState(ctx, db.SetJiraLinkStateParams{ID: link.ID, State: "orphaned"}); serr != nil {
+					return serr
+				}
+				_ = w.Journal.Record(ctx, conn, cycleID, JournalLinkOrphaned, link.IssueID, link.JiraKey, map[string]any{
+					"reason": "issue deleted or inaccessible",
+				})
+				continue
+			}
+			return gerr
+		}
+		// A key whose project prefix changed means a Jira project move.
+		if !strings.HasPrefix(remote.Key, conn.ProjectKey+"-") {
+			if serr := w.Q.SetJiraLinkState(ctx, db.SetJiraLinkStateParams{ID: link.ID, State: "orphaned"}); serr != nil {
+				return serr
+			}
+			_ = w.Journal.Record(ctx, conn, cycleID, JournalLinkOrphaned, link.IssueID, link.JiraKey, map[string]any{
+				"reason": "moved out of the connected project", "new_key": remote.Key,
+			})
+			continue
+		}
+		if conn.JqlFilter != "" {
+			inScope, serr := w.issueMatchesScope(ctx, client, conn, link.JiraIssueID)
+			if serr != nil {
+				return serr
+			}
+			if !inScope {
+				if uerr := w.Q.SetJiraLinkState(ctx, db.SetJiraLinkStateParams{ID: link.ID, State: "dormant"}); uerr != nil {
+					return uerr
+				}
+				_ = w.Journal.Record(ctx, conn, cycleID, JournalScopeDormant, link.IssueID, link.JiraKey, nil)
+				continue
+			}
+		}
+		healthy = append(healthy, link.JiraIssueID)
+	}
+	if len(healthy) > 0 {
+		return w.Q.TouchJiraLinksSeen(ctx, db.TouchJiraLinksSeenParams{ConnectionID: conn.ID, Column2: healthy})
+	}
+	return nil
+}
+
+// issueMatchesScope asks Jira whether one issue still matches the narrowed
+// scope (JQL cannot be evaluated locally).
+func (w *Worker) issueMatchesScope(ctx context.Context, client *Client, conn db.JiraConnection, jiraIssueID string) (bool, error) {
+	jql := fmt.Sprintf("project = %q AND id = %s AND (%s)", conn.ProjectKey, jiraIssueID, conn.JqlFilter)
+	found, _, err := client.SearchJQLIDs(ctx, jql, 1)
+	if err != nil {
+		return false, err
+	}
+	return len(found) > 0, nil
 }
