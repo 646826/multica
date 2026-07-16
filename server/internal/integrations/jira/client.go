@@ -577,3 +577,38 @@ func (c *Client) AddComment(ctx context.Context, issueID string, body json.RawMe
 	}
 	return resp.ID, nil
 }
+
+// Transition is one currently-available workflow edge of a Jira issue.
+type Transition struct {
+	ID     string
+	ToID   string
+	ToName string
+}
+
+// GetTransitions lists the transitions available from the issue's current
+// status (Jira only exposes current-node edges).
+func (c *Client) GetTransitions(ctx context.Context, issueID string) ([]Transition, error) {
+	var payload struct {
+		Transitions []struct {
+			ID string `json:"id"`
+			To struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"to"`
+		} `json:"transitions"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/rest/api/3/issue/"+url.PathEscape(issueID)+"/transitions", nil, nil, &payload); err != nil {
+		return nil, err
+	}
+	out := make([]Transition, 0, len(payload.Transitions))
+	for _, tr := range payload.Transitions {
+		out = append(out, Transition{ID: tr.ID, ToID: tr.To.ID, ToName: tr.To.Name})
+	}
+	return out, nil
+}
+
+// DoTransition executes one workflow transition.
+func (c *Client) DoTransition(ctx context.Context, issueID, transitionID string) error {
+	body := map[string]any{"transition": map[string]string{"id": transitionID}}
+	return c.do(ctx, http.MethodPost, "/rest/api/3/issue/"+url.PathEscape(issueID)+"/transitions", nil, body, nil)
+}

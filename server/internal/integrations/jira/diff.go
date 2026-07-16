@@ -101,6 +101,10 @@ type StatusState struct {
 	RemoteID      string `json:"remote_id,omitempty"`
 	Local         string `json:"local,omitempty"`
 	BreadcrumbFor string `json:"breadcrumb_for,omitempty"`
+	// UnreachableFor suppresses re-journaling the same doomed transition
+	// every cycle: SHA(local status + target id) of the last loud failure,
+	// cleared when the local status changes or the transition succeeds.
+	UnreachableFor string `json:"unreachable_for,omitempty"`
 }
 
 type LabelsState struct {

@@ -164,9 +164,9 @@ func nextRetryAt(now time.Time, retryCount int32) time.Time {
 // Outbound actions the planner emits are deferred to the outbound appliers
 // (Epic 4) — snapshots stay unchanged for them, so nothing is lost.
 // A failure marks the Link dirty (ladder) and never fails the cycle (NFR-3).
-func (w *Worker) updateIssue(ctx context.Context, conn db.JiraConnection, sm StatusMap, fieldMap []FieldMapRow, link db.JiraLink, obs ObservedIssue, cycleID pgtype.UUID) {
+func (w *Worker) updateIssue(ctx context.Context, conn db.JiraConnection, sm StatusMap, fieldMap []FieldMapRow, link db.JiraLink, obs *ObservedIssue, cycleID pgtype.UUID) {
 	if err := w.updateIssueOnce(ctx, conn, sm, fieldMap, link, obs, cycleID); err != nil {
-		_ = w.Journal.Record(ctx, conn, cycleID, JournalItemDirty, link.IssueID, obs.Key, map[string]any{
+		_ = w.Journal.Record(ctx, conn, cycleID, JournalItemDirty, link.IssueID, link.JiraKey, map[string]any{
 			"error": redactError(err), "retry_count": link.RetryCount + 1,
 		})
 		if merr := w.Q.MarkJiraLinkDirty(ctx, db.MarkJiraLinkDirtyParams{
@@ -181,12 +181,12 @@ func (w *Worker) updateIssue(ctx context.Context, conn db.JiraConnection, sm Sta
 		if cerr := w.Q.ClearJiraLinkDirty(ctx, link.ID); cerr != nil {
 			slog.Error("jira: clear dirty failed", "link_id", uuidStr(link.ID), "error", cerr)
 		} else {
-			_ = w.Journal.Record(ctx, conn, cycleID, JournalItemRecovered, link.IssueID, obs.Key, nil)
+			_ = w.Journal.Record(ctx, conn, cycleID, JournalItemRecovered, link.IssueID, link.JiraKey, nil)
 		}
 	}
 }
 
-func (w *Worker) updateIssueOnce(ctx context.Context, conn db.JiraConnection, sm StatusMap, fieldMap []FieldMapRow, link db.JiraLink, obs ObservedIssue, cycleID pgtype.UUID) error {
+func (w *Worker) updateIssueOnce(ctx context.Context, conn db.JiraConnection, sm StatusMap, fieldMap []FieldMapRow, link db.JiraLink, obs *ObservedIssue, cycleID pgtype.UUID) error {
 	items, err := ParseItems(link.Items)
 	if err != nil {
 		return err
@@ -207,11 +207,12 @@ func (w *Worker) updateIssueOnce(ctx context.Context, conn db.JiraConnection, sm
 		StatusMap: sm,
 		FieldMap:  fieldMap,
 		Items:     items,
-		Remote:    &obs,
+		Remote:    obs,
 		Local:     loc,
 	})
 
 	changedFields := false
+	statusTouched := false
 	newTitle, newDescription := issue.Title, issue.Description
 	for _, act := range actions {
 		switch act.Kind {
@@ -233,6 +234,7 @@ func (w *Worker) updateIssueOnce(ctx context.Context, conn db.JiraConnection, sm
 			w.publishIssueUpdated(conn, updated)
 			items.Status = StatusState{RemoteID: act.Value, Local: act.Target, BreadcrumbFor: items.Status.BreadcrumbFor}
 			issue.Status = act.Target
+			statusTouched = true
 		case ActBreadcrumbIn:
 			if berr := w.postLocalBreadcrumb(ctx, conn, issue, act); berr != nil {
 				return fmt.Errorf("breadcrumb: %w", berr)
@@ -245,8 +247,13 @@ func (w *Worker) updateIssueOnce(ctx context.Context, conn db.JiraConnection, sm
 			case "status":
 				items.Status.BreadcrumbFor = SHA(act.Old)
 			}
+		case ActOutTransition:
+			if err := w.applyOutTransition(ctx, conn, link, &items, act, cycleID); err != nil {
+				return err
+			}
+			statusTouched = true
 		case ActSkip:
-			_ = w.Journal.Record(ctx, conn, cycleID, act.Journal, link.IssueID, obs.Key, act.Detail)
+			_ = w.Journal.Record(ctx, conn, cycleID, act.Journal, link.IssueID, link.JiraKey, act.Detail)
 		default:
 			// Outbound kinds (out_*, breadcrumb_remote) are Epic 4's job and
 			// label/field inbound applies land with Epic 5; snapshots for
@@ -276,19 +283,24 @@ func (w *Worker) updateIssueOnce(ctx context.Context, conn db.JiraConnection, sm
 	}
 
 	// Track the remote status pair even when nothing was applied this cycle
-	// (change-driven detection depends on the last-observed remote id).
-	if obs.StatusID != "" && items.Status.RemoteID != obs.StatusID {
+	// (change-driven detection depends on the last-observed remote id) — but
+	// never clobber a snapshot an applier just forwarded.
+	if !statusTouched && obs != nil && obs.StatusID != "" && items.Status.RemoteID != obs.StatusID {
 		// Status changed remotely but was not applied (skip/unmapped/out-mode):
 		// record the observation so the same change does not re-plan forever.
 		items.Status.RemoteID = obs.StatusID
 	}
 
+	jiraKey := link.JiraKey
+	if obs != nil && obs.Key != "" {
+		jiraKey = obs.Key
+	}
 	raw, err := json.Marshal(items)
 	if err != nil {
 		return err
 	}
 	return w.Q.UpdateJiraLinkItems(ctx, db.UpdateJiraLinkItemsParams{
-		ID: link.ID, Items: raw, JiraKey: obs.Key,
+		ID: link.ID, Items: raw, JiraKey: jiraKey,
 	})
 }
 
@@ -462,4 +474,47 @@ func (w *Worker) recordCommentLink(ctx context.Context, conn db.JiraConnection, 
 		IssueID: link.IssueID, CommentID: commentID, JiraCommentID: jiraCommentID,
 	})
 	return err
+}
+
+// applyOutTransition executes one planned Jira transition (FR-17): resolve
+// the available edges, execute the one landing on the mapped target, refresh
+// the status snapshot; an unreachable target journals loudly exactly once per
+// occurrence (marker) and pairs with transition_recovered on later success.
+func (w *Worker) applyOutTransition(ctx context.Context, conn db.JiraConnection, link db.JiraLink, items *ItemsV1, act Action, cycleID pgtype.UUID) error {
+	attemptSig := SHA(act.Value + "->" + act.Target)
+	client, err := w.Svc.ClientFor(conn)
+	if err != nil {
+		return err
+	}
+	transitions, err := client.GetTransitions(ctx, link.JiraIssueID)
+	if err != nil {
+		return err
+	}
+	var transitionID string
+	for _, tr := range transitions {
+		if tr.ToID == act.Target {
+			transitionID = tr.ID
+			break
+		}
+	}
+	if transitionID == "" {
+		// Loud exactly once per occurrence: the marker suppresses repeat
+		// journaling, but the cheap probe above keeps running so a workflow
+		// change recovers automatically (FR-17).
+		if items.Status.UnreachableFor != attemptSig {
+			items.Status.UnreachableFor = attemptSig
+			_ = w.Journal.Record(ctx, conn, cycleID, JournalTransitionUnreachable, link.IssueID, link.JiraKey, map[string]any{
+				"multica_status": act.Value, "target_jira_status_id": act.Target,
+			})
+		}
+		return nil
+	}
+	if err := client.DoTransition(ctx, link.JiraIssueID, transitionID); err != nil {
+		return fmt.Errorf("transition: %w", err)
+	}
+	if items.Status.UnreachableFor != "" {
+		_ = w.Journal.Record(ctx, conn, cycleID, JournalTransitionRecovered, link.IssueID, link.JiraKey, nil)
+	}
+	items.Status = StatusState{RemoteID: act.Target, Local: act.Value, BreadcrumbFor: items.Status.BreadcrumbFor}
+	return nil
 }

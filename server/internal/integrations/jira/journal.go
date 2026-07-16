@@ -44,8 +44,11 @@ const (
 	// Comments.
 	JournalRestrictedCommentDropped JournalKind = "restricted_comment_dropped"
 	JournalCommentAdopted           JournalKind = "comment_adopted"
-	JournalScopeResumed             JournalKind = "scope_resumed"
-	JournalLinkOrphaned             JournalKind = "link_orphaned"
+	// Outbound status (FR-17) with recovery pairing.
+	JournalTransitionUnreachable JournalKind = "transition_unreachable"
+	JournalTransitionRecovered   JournalKind = "transition_recovered"
+	JournalScopeResumed          JournalKind = "scope_resumed"
+	JournalLinkOrphaned          JournalKind = "link_orphaned"
 )
 
 // journalKinds is the registry; Record refuses kinds outside it.
@@ -63,6 +66,8 @@ var journalKinds = map[JournalKind]bool{
 	JournalScopeDormant:             true,
 	JournalRestrictedCommentDropped: true,
 	JournalCommentAdopted:           true,
+	JournalTransitionUnreachable:    true,
+	JournalTransitionRecovered:      true,
 	JournalScopeResumed:             true,
 	JournalLinkOrphaned:             true,
 }

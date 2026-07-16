@@ -191,6 +191,7 @@ func (w *Worker) cycleBody(ctx context.Context, conn db.JiraConnection, cycleID 
 
 	var maxUpdated time.Time
 	var seenLinked []string
+	processed := map[[16]byte]bool{} // links already planned this cycle
 	for _, obs := range observed {
 		if obs.Updated.After(maxUpdated) {
 			maxUpdated = obs.Updated
@@ -213,7 +214,8 @@ func (w *Worker) cycleBody(ctx context.Context, conn db.JiraConnection, cycleID 
 			}
 		case link.State == "ok":
 			seenLinked = append(seenLinked, obs.ID)
-			w.updateIssue(ctx, conn, sm, fieldRows, link, obs, cycleID)
+			processed[link.ID.Bytes] = true
+			w.updateIssue(ctx, conn, sm, fieldRows, link, &obs, cycleID)
 			if cerr := w.mirrorComments(ctx, conn, link, cycleID); cerr != nil {
 				_ = w.Journal.Record(ctx, conn, cycleID, JournalItemDirty, link.IssueID, obs.Key, map[string]any{
 					"error": redactError(cerr), "at": "comments",
@@ -230,7 +232,8 @@ func (w *Worker) cycleBody(ctx context.Context, conn db.JiraConnection, cycleID 
 			})
 			seenLinked = append(seenLinked, obs.ID)
 			link.State = "ok"
-			w.updateIssue(ctx, conn, sm, fieldRows, link, obs, cycleID)
+			processed[link.ID.Bytes] = true
+			w.updateIssue(ctx, conn, sm, fieldRows, link, &obs, cycleID)
 		}
 	}
 	// Dirty rescan (AD-2): due retries re-enter the observe set with a fresh
@@ -269,7 +272,8 @@ func (w *Worker) cycleBody(ctx context.Context, conn db.JiraConnection, cycleID 
 		for k, v := range remote.Fields {
 			obs.Fields[k] = string(v)
 		}
-		w.updateIssue(ctx, conn, sm, fieldRows, link, obs, cycleID)
+		processed[link.ID.Bytes] = true
+		w.updateIssue(ctx, conn, sm, fieldRows, link, &obs, cycleID)
 	}
 
 	if len(seenLinked) > 0 {
@@ -278,6 +282,43 @@ func (w *Worker) cycleBody(ctx context.Context, conn db.JiraConnection, cycleID 
 		}); err != nil {
 			return client.Requests(), err
 		}
+	}
+
+	// Local observation (AD-2, Multica side): pairs whose issue row changed
+	// since the local Cursor run the same planner with Remote unset — the
+	// outbound arms (transitions now; fields/labels with their stories) fire
+	// from here.
+	localCut := conn.LocalCursor
+	if !localCut.Valid {
+		localCut = pgtype.Timestamptz{Time: w.now().Add(-time.Hour), Valid: true}
+	}
+	localChanged, lerr := w.Q.ListLocallyChangedLinkedIssues(ctx, db.ListLocallyChangedLinkedIssuesParams{
+		ConnectionID: conn.ID,
+		UpdatedAt:    pgtype.Timestamptz{Time: localCut.Time.Add(-observeOverlap), Valid: true},
+		Limit:        int32(observePageCap),
+	})
+	if lerr != nil {
+		return client.Requests(), lerr
+	}
+	var maxLocal time.Time
+	for _, row := range localChanged {
+		if row.IssueUpdatedAt.Time.After(maxLocal) {
+			maxLocal = row.IssueUpdatedAt.Time
+		}
+		if processed[row.ID.Bytes] {
+			// Already planned this cycle from the Jira side (both-sided change);
+			// the inbound plan considered the local values too — re-planning
+			// would only burn a redundant GetIssue and double-count failures.
+			continue
+		}
+		link := db.JiraLink{
+			ID: row.ID, ConnectionID: row.ConnectionID, WorkspaceID: row.WorkspaceID,
+			IssueID: row.IssueID, JiraIssueID: row.JiraIssueID, JiraKey: row.JiraKey,
+			State: row.State, Items: row.Items, Dirty: row.Dirty,
+			RetryAt: row.RetryAt, RetryCount: row.RetryCount, LastSeenAt: row.LastSeenAt,
+			CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+		}
+		w.updateIssue(ctx, conn, sm, fieldRows, link, nil, cycleID)
 	}
 
 	if err := w.syncOutboundComments(ctx, conn, cycleID); err != nil {
@@ -297,7 +338,9 @@ func (w *Worker) cycleBody(ctx context.Context, conn db.JiraConnection, cycleID 
 		jiraCursor = pgtype.Timestamptz{Time: w.now().UTC(), Valid: true}
 	}
 	localCursor := conn.LocalCursor
-	if !localCursor.Valid {
+	if !maxLocal.IsZero() {
+		localCursor = pgtype.Timestamptz{Time: maxLocal.UTC(), Valid: true}
+	} else if !localCursor.Valid {
 		localCursor = pgtype.Timestamptz{Time: w.now().UTC(), Valid: true}
 	}
 	if err := w.Q.UpdateJiraConnectionCursors(ctx, db.UpdateJiraConnectionCursorsParams{

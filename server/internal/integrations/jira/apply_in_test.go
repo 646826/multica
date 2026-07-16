@@ -284,6 +284,16 @@ func TestInboundDivergenceBreadcrumbOnceAndLocalActivationSafe(t *testing.T) {
 	now := time.Now().UTC()
 	var remoteTitle atomic.Value
 	remoteTitle.Store("Imported GAME-11")
+	f.mux.HandleFunc("/rest/api/3/issue/id-GAME-11/transitions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.Write([]byte(`{"transitions":[{"id":"t-2","to":{"id":"200","name":"In Progress"}}]}`))
+	})
+	f.mux.HandleFunc("/rest/api/3/issue/id-GAME-11/comment", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"comments":[],"startAt":0,"maxResults":100,"total":0}`))
+	})
 	f.mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"issues":[{"id":"id-GAME-11","key":"GAME-11","fields":{
 			"summary":%q,

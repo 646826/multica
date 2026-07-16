@@ -978,6 +978,79 @@ func (q *Queries) ListJiraLinksUnseenSince(ctx context.Context, arg ListJiraLink
 	return items, nil
 }
 
+const listLocallyChangedLinkedIssues = `-- name: ListLocallyChangedLinkedIssues :many
+SELECT jl.id, jl.connection_id, jl.workspace_id, jl.issue_id, jl.jira_issue_id, jl.jira_key, jl.state, jl.items, jl.dirty, jl.retry_at, jl.retry_count, jl.last_seen_at, jl.created_at, jl.updated_at, i.updated_at AS issue_updated_at
+FROM jira_link jl
+JOIN issue i ON i.id = jl.issue_id
+WHERE jl.connection_id = $1
+  AND jl.state = 'ok'
+  AND i.updated_at > $2
+ORDER BY i.updated_at ASC
+LIMIT $3
+`
+
+type ListLocallyChangedLinkedIssuesParams struct {
+	ConnectionID pgtype.UUID        `json:"connection_id"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+	Limit        int32              `json:"limit"`
+}
+
+type ListLocallyChangedLinkedIssuesRow struct {
+	ID             pgtype.UUID        `json:"id"`
+	ConnectionID   pgtype.UUID        `json:"connection_id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	IssueID        pgtype.UUID        `json:"issue_id"`
+	JiraIssueID    string             `json:"jira_issue_id"`
+	JiraKey        string             `json:"jira_key"`
+	State          string             `json:"state"`
+	Items          []byte             `json:"items"`
+	Dirty          bool               `json:"dirty"`
+	RetryAt        pgtype.Timestamptz `json:"retry_at"`
+	RetryCount     int32              `json:"retry_count"`
+	LastSeenAt     pgtype.Timestamptz `json:"last_seen_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	IssueUpdatedAt pgtype.Timestamptz `json:"issue_updated_at"`
+}
+
+// Local observation (AD-2, Multica side): healthy Linked pairs whose issue
+// row changed since the local Cursor. Read-only join on the core table.
+func (q *Queries) ListLocallyChangedLinkedIssues(ctx context.Context, arg ListLocallyChangedLinkedIssuesParams) ([]ListLocallyChangedLinkedIssuesRow, error) {
+	rows, err := q.db.Query(ctx, listLocallyChangedLinkedIssues, arg.ConnectionID, arg.UpdatedAt, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListLocallyChangedLinkedIssuesRow{}
+	for rows.Next() {
+		var i ListLocallyChangedLinkedIssuesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ConnectionID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.JiraIssueID,
+			&i.JiraKey,
+			&i.State,
+			&i.Items,
+			&i.Dirty,
+			&i.RetryAt,
+			&i.RetryCount,
+			&i.LastSeenAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.IssueUpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUnsyncedCommentsForConnection = `-- name: ListUnsyncedCommentsForConnection :many
 SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.created_at,
        jl.id AS link_id, jl.jira_issue_id, jl.jira_key

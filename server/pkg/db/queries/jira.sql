@@ -277,3 +277,15 @@ WHERE connection_id = $1 AND marker = $2 AND origin = 'outbound' AND state = 'pe
 UPDATE jira_comment_link
 SET jira_comment_id = $2, state = 'ok', updated_at = now()
 WHERE id = $1;
+
+-- name: ListLocallyChangedLinkedIssues :many
+-- Local observation (AD-2, Multica side): healthy Linked pairs whose issue
+-- row changed since the local Cursor. Read-only join on the core table.
+SELECT jl.*, i.updated_at AS issue_updated_at
+FROM jira_link jl
+JOIN issue i ON i.id = jl.issue_id
+WHERE jl.connection_id = $1
+  AND jl.state = 'ok'
+  AND i.updated_at > $2
+ORDER BY i.updated_at ASC
+LIMIT $3;
