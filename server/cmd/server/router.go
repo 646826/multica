@@ -886,6 +886,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// Jira connection state is member-visible for the same
 					// reason; management stays admin-only below.
 					r.Get("/jira", h.GetJiraConnection)
+					r.Get("/jira/health", h.GetJiraHealth)
 					// Custom runtime profiles — listing/reading is member-visible
 					// (the Runtime page renders for everyone; create/edit/delete
 					// are admin-gated below).

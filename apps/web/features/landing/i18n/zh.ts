@@ -299,6 +299,7 @@ export function createZhDict(allowSignup: boolean): LandingDict {
         title: "独立的 Issue 窗口、收件箱归档，以及更稳的智能体任务",
         changes: [],
         features: [
+          "连接 Jira Cloud 项目，智能体接手打标签的工单，回复自动回写到 Jira。",
           "现在可以在桌面端把任意 Issue 单独开一个窗口。",
           "收件箱新增归档视图，一键就能把内容找回来。",
           "每个自定义字段都能单独设置图标，一眼就能认出来。",

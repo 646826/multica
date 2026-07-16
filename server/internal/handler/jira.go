@@ -6,9 +6,11 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/integrations/jira"
 	"github.com/multica-ai/multica/server/internal/middleware"
@@ -541,4 +543,51 @@ func (h *Handler) ListJiraStatuses(w http.ResponseWriter, r *http.Request) {
 		out = append(out, map[string]any{"id": s.ID, "name": s.Name, "category": s.Category})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"statuses": out})
+}
+
+// GetJiraHealth returns the connection's Health with journal-backed skip
+// counters (FR-4/NFR-6): answers "why didn't X sync" without server logs.
+// Member-visible.
+func (h *Handler) GetJiraHealth(w http.ResponseWriter, r *http.Request) {
+	wsUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workspace id")
+	if !ok {
+		return
+	}
+	conn, err := h.Queries.GetJiraConnectionByWorkspace(r.Context(), wsUUID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeJSON(w, http.StatusOK, map[string]any{"connected": false})
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load jira connection")
+		return
+	}
+	since := pgtype.Timestamptz{Time: time.Now().UTC().Add(-24 * time.Hour), Valid: true}
+	counts, err := h.Queries.CountJiraJournalByKindSince(r.Context(), db.CountJiraJournalByKindSinceParams{
+		ConnectionID: conn.ID, CreatedAt: since,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load jira health")
+		return
+	}
+	counters := map[string]int64{}
+	for _, c := range counts {
+		counters[c.Kind] = c.Count
+	}
+	recent, _ := h.Queries.ListJiraJournalRecent(r.Context(), db.ListJiraJournalRecentParams{
+		ConnectionID: conn.ID, Limit: 20,
+	})
+	entries := make([]map[string]any, 0, len(recent))
+	for _, e := range recent {
+		entries = append(entries, map[string]any{
+			"kind": e.Kind, "jira_key": e.JiraKey, "detail": json.RawMessage(e.Detail),
+			"created_at": e.CreatedAt.Time.UTC().Format("2006-01-02T15:04:05Z07:00"),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"connected": true,
+		"enabled":   conn.Enabled,
+		"health":    json.RawMessage(conn.Health),
+		"counters":  counters,
+		"recent":    entries,
+	})
 }

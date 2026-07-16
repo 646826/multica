@@ -275,6 +275,7 @@ export function createJaDict(allowSignup: boolean): LandingDict {
           title: "Issue 専用ウィンドウ、受信トレイのアーカイブ、より安定したエージェント実行",
           changes: [],
           features: [
+          "Jira Cloud プロジェクトを接続すると、タグ付きチケットをエージェントが担当し、返信が Jira に反映されます。",
             "デスクトップ アプリで、任意の Issue を専用ウィンドウで開けるようになりました。",
             "受信トレイにアーカイブ ビューが加わり、ワンクリックで元に戻せます。",
             "カスタム フィールドごとにアイコンを設定でき、ひと目で見分けられます。",

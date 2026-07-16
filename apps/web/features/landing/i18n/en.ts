@@ -299,6 +299,7 @@ export function createEnDict(allowSignup: boolean): LandingDict {
         title: "Dedicated issue windows, an archived inbox, and steadier agent runs",
         changes: [],
         features: [
+          "Connect a Jira Cloud project so agents pick up tagged tickets and their replies flow back to Jira.",
           "Open any issue in its own window in the desktop app.",
           "Your Inbox now has an Archived view, with one click to bring anything back.",
           "Give each custom field its own icon so it is easy to spot at a glance.",

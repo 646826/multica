@@ -274,6 +274,7 @@ export function createKoDict(allowSignup: boolean): LandingDict {
           title: "Issue 전용 창, 받은함 보관, 그리고 더 안정적인 에이전트 실행",
           changes: [],
           features: [
+          "Jira Cloud 프로젝트를 연결하면 태그된 티켓을 에이전트가 맡고 답장이 Jira로 반영됩니다.",
             "데스크톱 앱에서 어떤 Issue든 전용 창으로 열 수 있습니다.",
             "받은함에 보관 보기가 추가되어, 한 번의 클릭으로 다시 되돌릴 수 있습니다.",
             "맞춤 필드마다 아이콘을 지정해 한눈에 알아볼 수 있습니다.",
