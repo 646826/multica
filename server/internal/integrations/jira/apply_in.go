@@ -402,10 +402,17 @@ func (w *Worker) mirrorComments(ctx context.Context, conn db.JiraConnection, lin
 			continue
 		}
 		if rc.AuthorID != "" && rc.AuthorID == conn.ServiceAccountID {
-			// Sync's own Jira comment observed back: record identity only
-			// (adopt-scan for outbound intents lands with Story 3.2).
-			if err := w.recordCommentLink(ctx, conn, link, pgtype.UUID{}, rc.ID); err != nil {
-				return err
+			// Sync's own Jira comment observed back: adopt a pending outbound
+			// intent by its marker (crash between POST and finalize, AD-15),
+			// else record identity only. Never mirrored as content.
+			adopted, aerr := w.adoptOutboundComment(ctx, conn, rc, cycleID, link.IssueID, link.JiraKey)
+			if aerr != nil {
+				return aerr
+			}
+			if !adopted {
+				if err := w.recordCommentLink(ctx, conn, link, pgtype.UUID{}, rc.ID); err != nil {
+					return err
+				}
 			}
 			continue
 		}

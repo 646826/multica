@@ -280,6 +280,10 @@ func (w *Worker) cycleBody(ctx context.Context, conn db.JiraConnection, cycleID 
 		}
 	}
 
+	if err := w.syncOutboundComments(ctx, conn, cycleID); err != nil {
+		return client.Requests(), err
+	}
+
 	if err := w.sweepUnseenLinks(ctx, client, conn, cycleID); err != nil {
 		return client.Requests(), err
 	}

@@ -43,6 +43,7 @@ const (
 	JournalScopeDormant JournalKind = "scope_dormant"
 	// Comments.
 	JournalRestrictedCommentDropped JournalKind = "restricted_comment_dropped"
+	JournalCommentAdopted           JournalKind = "comment_adopted"
 	JournalScopeResumed             JournalKind = "scope_resumed"
 	JournalLinkOrphaned             JournalKind = "link_orphaned"
 )
@@ -61,6 +62,7 @@ var journalKinds = map[JournalKind]bool{
 	JournalItemRecovered:            true,
 	JournalScopeDormant:             true,
 	JournalRestrictedCommentDropped: true,
+	JournalCommentAdopted:           true,
 	JournalScopeResumed:             true,
 	JournalLinkOrphaned:             true,
 }

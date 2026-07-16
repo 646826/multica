@@ -244,3 +244,36 @@ WHERE id = $1;
 -- name: DeleteJiraCommentLinksByConnection :execrows
 DELETE FROM jira_comment_link
 WHERE connection_id = $1;
+
+-- name: ListUnsyncedCommentsForConnection :many
+-- Outbound comment detection (Story 3.2): human/agent comments on healthy
+-- Linked pairs that have no identity row yet. Read-only join on core tables.
+SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.created_at,
+       jl.id AS link_id, jl.jira_issue_id, jl.jira_key
+FROM comment c
+JOIN jira_link jl ON jl.issue_id = c.issue_id
+WHERE jl.connection_id = $1
+  AND jl.state = 'ok'
+  AND c.author_type IN ('member', 'agent')
+  AND c.type = 'comment'
+  AND NOT EXISTS (SELECT 1 FROM jira_comment_link jcl WHERE jcl.comment_id = c.id)
+ORDER BY c.created_at ASC
+LIMIT $2;
+
+-- name: ClaimJiraCommentLinkOutbound :one
+-- Intent-first outbound claim (AD-15): the first caller creates the pending
+-- row with its marker; a concurrent/replayed caller gets the existing row.
+INSERT INTO jira_comment_link (connection_id, workspace_id, issue_id, comment_id, jira_comment_id, origin, marker, state)
+VALUES ($1, $2, $3, $4, '', 'outbound', $5, 'pending')
+ON CONFLICT (comment_id)
+DO UPDATE SET updated_at = jira_comment_link.updated_at
+RETURNING *;
+
+-- name: GetPendingOutboundCommentLinkByMarker :one
+SELECT * FROM jira_comment_link
+WHERE connection_id = $1 AND marker = $2 AND origin = 'outbound' AND state = 'pending';
+
+-- name: FinalizeJiraCommentLinkOutbound :exec
+UPDATE jira_comment_link
+SET jira_comment_id = $2, state = 'ok', updated_at = now()
+WHERE id = $1;

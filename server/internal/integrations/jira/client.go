@@ -565,3 +565,15 @@ func (c *Client) ListComments(ctx context.Context, issueID string) ([]RemoteComm
 		}
 	}
 }
+
+// AddComment posts one comment (ADF body) and returns the new comment id.
+func (c *Client) AddComment(ctx context.Context, issueID string, body json.RawMessage) (string, error) {
+	var resp struct {
+		ID string `json:"id"`
+	}
+	payload := map[string]json.RawMessage{"body": body}
+	if err := c.do(ctx, http.MethodPost, "/rest/api/3/issue/"+url.PathEscape(issueID)+"/comment", nil, payload, &resp); err != nil {
+		return "", err
+	}
+	return resp.ID, nil
+}

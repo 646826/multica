@@ -11,6 +11,49 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimJiraCommentLinkOutbound = `-- name: ClaimJiraCommentLinkOutbound :one
+INSERT INTO jira_comment_link (connection_id, workspace_id, issue_id, comment_id, jira_comment_id, origin, marker, state)
+VALUES ($1, $2, $3, $4, '', 'outbound', $5, 'pending')
+ON CONFLICT (comment_id)
+DO UPDATE SET updated_at = jira_comment_link.updated_at
+RETURNING id, connection_id, workspace_id, issue_id, comment_id, jira_comment_id, origin, marker, state, created_at, updated_at
+`
+
+type ClaimJiraCommentLinkOutboundParams struct {
+	ConnectionID pgtype.UUID `json:"connection_id"`
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	IssueID      pgtype.UUID `json:"issue_id"`
+	CommentID    pgtype.UUID `json:"comment_id"`
+	Marker       string      `json:"marker"`
+}
+
+// Intent-first outbound claim (AD-15): the first caller creates the pending
+// row with its marker; a concurrent/replayed caller gets the existing row.
+func (q *Queries) ClaimJiraCommentLinkOutbound(ctx context.Context, arg ClaimJiraCommentLinkOutboundParams) (JiraCommentLink, error) {
+	row := q.db.QueryRow(ctx, claimJiraCommentLinkOutbound,
+		arg.ConnectionID,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.CommentID,
+		arg.Marker,
+	)
+	var i JiraCommentLink
+	err := row.Scan(
+		&i.ID,
+		&i.ConnectionID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.CommentID,
+		&i.JiraCommentID,
+		&i.Origin,
+		&i.Marker,
+		&i.State,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const clearJiraLinkDirty = `-- name: ClearJiraLinkDirty :exec
 UPDATE jira_link
 SET dirty = false, retry_count = 0, retry_at = NULL, updated_at = now()
@@ -303,6 +346,22 @@ func (q *Queries) DeleteJiraLinksByConnection(ctx context.Context, connectionID 
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const finalizeJiraCommentLinkOutbound = `-- name: FinalizeJiraCommentLinkOutbound :exec
+UPDATE jira_comment_link
+SET jira_comment_id = $2, state = 'ok', updated_at = now()
+WHERE id = $1
+`
+
+type FinalizeJiraCommentLinkOutboundParams struct {
+	ID            pgtype.UUID `json:"id"`
+	JiraCommentID string      `json:"jira_comment_id"`
+}
+
+func (q *Queries) FinalizeJiraCommentLinkOutbound(ctx context.Context, arg FinalizeJiraCommentLinkOutboundParams) error {
+	_, err := q.db.Exec(ctx, finalizeJiraCommentLinkOutbound, arg.ID, arg.JiraCommentID)
+	return err
 }
 
 const finalizeJiraLink = `-- name: FinalizeJiraLink :exec
@@ -607,6 +666,35 @@ func (q *Queries) GetJiraLinkByJiraIssueID(ctx context.Context, arg GetJiraLinkB
 	return i, err
 }
 
+const getPendingOutboundCommentLinkByMarker = `-- name: GetPendingOutboundCommentLinkByMarker :one
+SELECT id, connection_id, workspace_id, issue_id, comment_id, jira_comment_id, origin, marker, state, created_at, updated_at FROM jira_comment_link
+WHERE connection_id = $1 AND marker = $2 AND origin = 'outbound' AND state = 'pending'
+`
+
+type GetPendingOutboundCommentLinkByMarkerParams struct {
+	ConnectionID pgtype.UUID `json:"connection_id"`
+	Marker       string      `json:"marker"`
+}
+
+func (q *Queries) GetPendingOutboundCommentLinkByMarker(ctx context.Context, arg GetPendingOutboundCommentLinkByMarkerParams) (JiraCommentLink, error) {
+	row := q.db.QueryRow(ctx, getPendingOutboundCommentLinkByMarker, arg.ConnectionID, arg.Marker)
+	var i JiraCommentLink
+	err := row.Scan(
+		&i.ID,
+		&i.ConnectionID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.CommentID,
+		&i.JiraCommentID,
+		&i.Origin,
+		&i.Marker,
+		&i.State,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const insertJiraJournal = `-- name: InsertJiraJournal :one
 
 INSERT INTO jira_journal (
@@ -879,6 +967,69 @@ func (q *Queries) ListJiraLinksUnseenSince(ctx context.Context, arg ListJiraLink
 			&i.LastSeenAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUnsyncedCommentsForConnection = `-- name: ListUnsyncedCommentsForConnection :many
+SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.created_at,
+       jl.id AS link_id, jl.jira_issue_id, jl.jira_key
+FROM comment c
+JOIN jira_link jl ON jl.issue_id = c.issue_id
+WHERE jl.connection_id = $1
+  AND jl.state = 'ok'
+  AND c.author_type IN ('member', 'agent')
+  AND c.type = 'comment'
+  AND NOT EXISTS (SELECT 1 FROM jira_comment_link jcl WHERE jcl.comment_id = c.id)
+ORDER BY c.created_at ASC
+LIMIT $2
+`
+
+type ListUnsyncedCommentsForConnectionParams struct {
+	ConnectionID pgtype.UUID `json:"connection_id"`
+	Limit        int32       `json:"limit"`
+}
+
+type ListUnsyncedCommentsForConnectionRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	AuthorType  string             `json:"author_type"`
+	AuthorID    pgtype.UUID        `json:"author_id"`
+	Content     string             `json:"content"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	LinkID      pgtype.UUID        `json:"link_id"`
+	JiraIssueID string             `json:"jira_issue_id"`
+	JiraKey     string             `json:"jira_key"`
+}
+
+// Outbound comment detection (Story 3.2): human/agent comments on healthy
+// Linked pairs that have no identity row yet. Read-only join on core tables.
+func (q *Queries) ListUnsyncedCommentsForConnection(ctx context.Context, arg ListUnsyncedCommentsForConnectionParams) ([]ListUnsyncedCommentsForConnectionRow, error) {
+	rows, err := q.db.Query(ctx, listUnsyncedCommentsForConnection, arg.ConnectionID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUnsyncedCommentsForConnectionRow{}
+	for rows.Next() {
+		var i ListUnsyncedCommentsForConnectionRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.AuthorType,
+			&i.AuthorID,
+			&i.Content,
+			&i.CreatedAt,
+			&i.LinkID,
+			&i.JiraIssueID,
+			&i.JiraKey,
 		); err != nil {
 			return nil, err
 		}

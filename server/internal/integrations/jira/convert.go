@@ -223,3 +223,37 @@ func CanonicalMarkdown(s string) string {
 	}
 	return strings.TrimSpace(s)
 }
+
+// TextToADF renders text as a minimal ADF document: one paragraph per
+// blank-line-separated block, hard breaks inside blocks. The full
+// Markdown-profile writer replaces the body rendering in Story 3.4; the
+// shape here is already valid ADF that Jira renders readably.
+func TextToADF(text string) json.RawMessage {
+	blocks := strings.Split(CanonicalMarkdown(text), "\n\n")
+	content := make([]map[string]any, 0, len(blocks))
+	for _, block := range blocks {
+		lines := strings.Split(block, "\n")
+		var inner []map[string]any
+		for i, line := range lines {
+			if line != "" {
+				inner = append(inner, map[string]any{"type": "text", "text": line})
+			}
+			if i < len(lines)-1 {
+				inner = append(inner, map[string]any{"type": "hardBreak"})
+			}
+		}
+		if len(inner) == 0 {
+			continue
+		}
+		content = append(content, map[string]any{"type": "paragraph", "content": inner})
+	}
+	if len(content) == 0 {
+		content = append(content, map[string]any{"type": "paragraph", "content": []map[string]any{{"type": "text", "text": " "}}})
+	}
+	doc := map[string]any{"type": "doc", "version": 1, "content": content}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return json.RawMessage(`{"type":"doc","version":1,"content":[]}`)
+	}
+	return raw
+}
