@@ -3,6 +3,7 @@ package jira
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -33,9 +34,10 @@ func (w *Worker) applyTagRules(ctx context.Context, conn db.JiraConnection, issu
 	currentLabels := toSet(obs.Labels)
 	firedLabels := toSet(items.Tag.FiredLabels)
 
-	// Determine which rules match NOW and which of those are edge (newly true).
-	var edgeAgent string
-	var edgeVia map[string]any
+	// Collect newly-edged rules, deduped by TARGET agent: a single agent may be
+	// reached by several signals in one observation, but two DISTINCT agents is
+	// an ambiguous route (RU §11.7) — we pick no random winner.
+	edged := map[string]map[string]any{} // agent_id → via detail
 	newFiredLabels := map[string]bool{}
 	newFiredAssignee := items.Tag.FiredAssignee
 
@@ -44,16 +46,14 @@ func (w *Worker) applyTagRules(ctx context.Context, conn db.JiraConnection, issu
 		case "label":
 			if currentLabels[rule.MatchValue] {
 				newFiredLabels[rule.MatchValue] = true
-				if !firedLabels[rule.MatchValue] && edgeAgent == "" {
-					edgeAgent = rule.AgentID
-					edgeVia = map[string]any{"match_type": "label", "match_value": rule.MatchValue}
+				if !firedLabels[rule.MatchValue] {
+					edged[rule.AgentID] = map[string]any{"match_type": "label", "match_value": rule.MatchValue}
 				}
 			}
 		case "assignee":
 			if obs.AssigneeKey != "" && obs.AssigneeKey == rule.MatchValue {
-				if items.Tag.FiredAssignee != rule.MatchValue && edgeAgent == "" {
-					edgeAgent = rule.AgentID
-					edgeVia = map[string]any{"match_type": "assignee", "match_value": rule.MatchValue}
+				if items.Tag.FiredAssignee != rule.MatchValue {
+					edged[rule.AgentID] = map[string]any{"match_type": "assignee", "match_value": rule.MatchValue}
 				}
 				newFiredAssignee = rule.MatchValue
 			}
@@ -64,11 +64,34 @@ func (w *Worker) applyTagRules(ctx context.Context, conn db.JiraConnection, issu
 		newFiredAssignee = ""
 	}
 
-	if edgeAgent == "" {
+	if len(edged) == 0 {
 		// No edge to act on: persist the current signal sets and return.
 		items.Tag.FiredLabels = setKeys(newFiredLabels)
 		items.Tag.FiredAssignee = newFiredAssignee
 		return false, nil
+	}
+	if len(edged) > 1 {
+		// Ambiguous route: distinct targets in one observation. Consume the
+		// edges (so it does not re-alarm every cycle — edge-triggered, the user
+		// re-touches a label to retry once disambiguated), surface it loudly,
+		// and assign nothing.
+		items.Tag.FiredLabels = setKeys(newFiredLabels)
+		items.Tag.FiredAssignee = newFiredAssignee
+		ids := make([]string, 0, len(edged))
+		for id := range edged {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		_ = w.Journal.Record(ctx, conn, cycleID, JournalTagAmbiguous, issue.ID, obs.Key, map[string]any{
+			"agent_ids": ids,
+		})
+		return false, nil
+	}
+	// Exactly one distinct target — the edge to act on.
+	var edgeAgent string
+	var edgeVia map[string]any
+	for id, via := range edged {
+		edgeAgent, edgeVia = id, via
 	}
 
 	// Validate the agent exists in the workspace (FR-26). A missing/invalid

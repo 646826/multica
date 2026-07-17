@@ -52,9 +52,10 @@ const (
 	JournalCreateRejected   JournalKind = "create_rejected"
 	JournalLabelTransformed JournalKind = "label_transformed"
 	JournalFieldSkipped     JournalKind = "field_skipped"
-	// Agent tagging (FR-27) — application and guarded skips.
-	JournalTagAssigned JournalKind = "tag_assigned"
-	JournalTagSkipped  JournalKind = "tag_skipped"
+	// Agent tagging (FR-27) — application, guarded skips, and ambiguous routes.
+	JournalTagAssigned  JournalKind = "tag_assigned"
+	JournalTagSkipped   JournalKind = "tag_skipped"
+	JournalTagAmbiguous JournalKind = "tag_ambiguous"
 	// Mention bridge (FR-29): a mention woke its agent / could not wake it. The
 	// woken record carries the Jira author accountId so every agent run traces
 	// back to the human who triggered it.
@@ -87,6 +88,7 @@ var journalKinds = map[JournalKind]bool{
 	JournalFieldSkipped:             true,
 	JournalTagAssigned:              true,
 	JournalTagSkipped:               true,
+	JournalTagAmbiguous:             true,
 	JournalMentionWoken:             true,
 	JournalMentionDenied:            true,
 	JournalScopeResumed:             true,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -61,5 +62,56 @@ func TestImportNeverTriggersFromHistory(t *testing.T) {
 	}
 	if n := agentTaskCount(t, w, conn.WorkspaceID); n != 0 {
 		t.Fatalf("history (label+assignee+@mention present at import) fired %d agent runs, want 0", n)
+	}
+}
+
+// Two route labels pointing at DIFFERENT agents in one observation are
+// ambiguous: sync must assign neither and pick no random winner (RU §11.7).
+func TestAmbiguousRouteBlocks(t *testing.T) {
+	f := newFakeJira(t)
+	now := time.Now().UTC()
+	labels := atomic.Value{}
+	labels.Store(`[]`)
+	f.mux.HandleFunc("/rest/api/3/search/jql", func(wr http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(wr, `{"issues":[{"id":"id-AMB","key":"AMB-1","fields":{
+			"summary":"Amb","description":{"type":"doc","version":1,"content":[]},
+			"status":{"id":"100","name":"To Do","statusCategory":{"key":"new"}},
+			"labels":%s,"updated":%q}}],"isLast":true}`, labels.Load(), now.Format(jiraTimeLayout))
+	})
+	f.mux.HandleFunc("/rest/api/3/issue/id-AMB/comment", func(wr http.ResponseWriter, r *http.Request) {
+		wr.Write([]byte(`{"comments":[],"startAt":0,"maxResults":100,"total":0}`))
+	})
+	w, conn, q := importFixture(t, f)
+	ctx := context.Background()
+	a1 := makeTestAgent(t, w, conn.WorkspaceID, "agent-a")
+	a2 := makeTestAgent(t, w, conn.WorkspaceID, "agent-b")
+	conn = tagRuleConn(t, q, conn, fmt.Sprintf(
+		`[{"match_type":"label","match_value":"route-a","agent_id":%q},{"match_type":"label","match_value":"route-b","agent_id":%q}]`,
+		uuidStr(a1), uuidStr(a2)))
+
+	rewind := func() db.JiraConnection {
+		c, _ := q.GetJiraConnectionByID(ctx, conn.ID)
+		_ = q.UpdateJiraConnectionCursors(ctx, db.UpdateJiraConnectionCursorsParams{
+			ID: conn.ID, JiraCursor: pgtype.Timestamptz{Time: now.Add(-time.Hour), Valid: true}, LocalCursor: c.LocalCursor})
+		c, _ = q.GetJiraConnectionByID(ctx, conn.ID)
+		return c
+	}
+	// Import with no labels.
+	if _, err := w.runCycle(ctx, conn); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	link, _ := q.GetJiraLinkByJiraIssueID(ctx, db.GetJiraLinkByJiraIssueIDParams{ConnectionID: conn.ID, JiraIssueID: "id-AMB"})
+
+	// Both route labels appear at once → two distinct targets, one observation.
+	labels.Store(`["route-a","route-b"]`)
+	if _, err := w.runCycle(ctx, rewind()); err != nil {
+		t.Fatalf("ambiguous cycle: %v", err)
+	}
+	issue, _ := q.GetIssue(ctx, link.IssueID)
+	if issue.AssigneeType.Valid && issue.AssigneeType.String == "agent" {
+		t.Fatalf("ambiguous route must not assign an agent: %+v", issue)
+	}
+	if n := agentTaskCount(t, w, conn.WorkspaceID); n != 0 {
+		t.Fatalf("ambiguous route fired %d runs, want 0", n)
 	}
 }
