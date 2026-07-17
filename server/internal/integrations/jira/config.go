@@ -419,9 +419,13 @@ func (s *Service) RotateToken(ctx context.Context, conn db.JiraConnection, email
 		return fmt.Errorf("credential validation failed: %w", err)
 	}
 	if me.AccountID != "" {
-		_ = s.Q.UpdateJiraConnectionServiceAccount(ctx, db.UpdateJiraConnectionServiceAccountParams{
+		if uerr := s.Q.UpdateJiraConnectionServiceAccount(ctx, db.UpdateJiraConnectionServiceAccountParams{
 			ID: conn.ID, ServiceAccountID: me.AccountID,
-		})
+		}); uerr != nil {
+			// A stale service-account id would break the comment echo filter,
+			// so surface the failure rather than swallow it.
+			return fmt.Errorf("rotate token: persist service account: %w", uerr)
+		}
 	}
 	encrypted, err := s.Box.Seal([]byte(token))
 	if err != nil {

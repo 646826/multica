@@ -364,30 +364,6 @@ func (q *Queries) FinalizeJiraCommentLinkOutbound(ctx context.Context, arg Final
 	return err
 }
 
-const finalizeJiraLink = `-- name: FinalizeJiraLink :exec
-UPDATE jira_link
-SET state = 'ok', jira_issue_id = $2, jira_key = $3, items = $4, updated_at = now()
-WHERE id = $1
-`
-
-type FinalizeJiraLinkParams struct {
-	ID          pgtype.UUID `json:"id"`
-	JiraIssueID string      `json:"jira_issue_id"`
-	JiraKey     string      `json:"jira_key"`
-	Items       []byte      `json:"items"`
-}
-
-// Intent-first creation (AD-15): pending -> ok with the remote identity.
-func (q *Queries) FinalizeJiraLink(ctx context.Context, arg FinalizeJiraLinkParams) error {
-	_, err := q.db.Exec(ctx, finalizeJiraLink,
-		arg.ID,
-		arg.JiraIssueID,
-		arg.JiraKey,
-		arg.Items,
-	)
-	return err
-}
-
 const finalizeJiraLinkCreate = `-- name: FinalizeJiraLinkCreate :exec
 UPDATE jira_link
 SET state = 'ok', jira_issue_id = $2, issue_id = $3, jira_key = $4, items = $5,
@@ -866,44 +842,6 @@ func (q *Queries) ListEnabledJiraConnections(ctx context.Context) ([]JiraConnect
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.ServiceAccountID,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listJiraCommentLinksByIssue = `-- name: ListJiraCommentLinksByIssue :many
-SELECT id, connection_id, workspace_id, issue_id, comment_id, jira_comment_id, origin, marker, state, created_at, updated_at FROM jira_comment_link
-WHERE issue_id = $1
-ORDER BY created_at ASC
-`
-
-func (q *Queries) ListJiraCommentLinksByIssue(ctx context.Context, issueID pgtype.UUID) ([]JiraCommentLink, error) {
-	rows, err := q.db.Query(ctx, listJiraCommentLinksByIssue, issueID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []JiraCommentLink{}
-	for rows.Next() {
-		var i JiraCommentLink
-		if err := rows.Scan(
-			&i.ID,
-			&i.ConnectionID,
-			&i.WorkspaceID,
-			&i.IssueID,
-			&i.CommentID,
-			&i.JiraCommentID,
-			&i.Origin,
-			&i.Marker,
-			&i.State,
-			&i.CreatedAt,
-			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

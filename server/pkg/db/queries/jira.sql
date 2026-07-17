@@ -156,11 +156,6 @@ UPDATE jira_link
 SET state = $2, updated_at = now()
 WHERE id = $1;
 
--- name: FinalizeJiraLink :exec
--- Intent-first creation (AD-15): pending -> ok with the remote identity.
-UPDATE jira_link
-SET state = 'ok', jira_issue_id = $2, jira_key = $3, items = $4, updated_at = now()
-WHERE id = $1;
 
 -- name: MarkJiraLinkDirty :exec
 UPDATE jira_link
@@ -231,10 +226,6 @@ INSERT INTO jira_comment_link (
 ) VALUES ($1, $2, $3, $4, $5, 'inbound', 'ok')
 RETURNING *;
 
--- name: ListJiraCommentLinksByIssue :many
-SELECT * FROM jira_comment_link
-WHERE issue_id = $1
-ORDER BY created_at ASC;
 
 -- name: UpdateJiraConnectionServiceAccount :exec
 UPDATE jira_connection

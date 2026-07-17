@@ -133,10 +133,9 @@ func (w *Worker) applyTagRules(ctx context.Context, conn db.JiraConnection, issu
 	// WillEnqueueRun exactly (backlog parking, agent access, pending-run dedup).
 	w.publishIssueUpdated(conn, updated)
 	if w.Issues != nil && w.Tasks != nil {
-		if trigger, ok := w.Issues.WillEnqueueRun(ctx, service.IssueTriggerInput{
+		if _, ok := w.Issues.WillEnqueueRun(ctx, service.IssueTriggerInput{
 			Issue: updated, PrevStatus: issue.Status, AssigneeChanged: true,
 		}, service.IssueTriggerProbe{}); ok {
-			_ = trigger
 			if _, eerr := w.Tasks.EnqueueTaskForIssue(ctx, updated); eerr != nil {
 				_ = w.Journal.Record(ctx, conn, cycleID, JournalTagSkipped, issue.ID, obs.Key, map[string]any{
 					"reason": "dispatch enqueue failed", "error": redactError(eerr),
