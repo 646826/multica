@@ -115,3 +115,156 @@ func TestAmbiguousRouteBlocks(t *testing.T) {
 		t.Fatalf("ambiguous route fired %d runs, want 0", n)
 	}
 }
+
+func journalCount(t *testing.T, w *Worker, connID pgtype.UUID, kind string) int {
+	t.Helper()
+	var n int
+	if err := w.Pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM jira_journal WHERE connection_id=$1 AND kind=$2", connID, kind).Scan(&n); err != nil {
+		t.Fatalf("journal count: %v", err)
+	}
+	return n
+}
+
+func rewindConn(t *testing.T, q *db.Queries, id pgtype.UUID, to time.Time) db.JiraConnection {
+	t.Helper()
+	ctx := context.Background()
+	c, _ := q.GetJiraConnectionByID(ctx, id)
+	_ = q.UpdateJiraConnectionCursors(ctx, db.UpdateJiraConnectionCursorsParams{
+		ID: id, JiraCursor: pgtype.Timestamptz{Time: to, Valid: true}, LocalCursor: c.LocalCursor})
+	c, _ = q.GetJiraConnectionByID(ctx, id)
+	return c
+}
+
+// Pin (RU §26.2): a live comment with no mention does not trigger, and editing
+// it to ADD a mention (same Jira comment id) still does not — mirroring keys on
+// the id and skips an already-linked comment.
+func TestLiveCommentAndLaterMentionEditDoNotTrigger(t *testing.T) {
+	f := newFakeJira(t)
+	now := time.Now().UTC()
+	state := atomic.Value{}
+	state.Store("none")
+	f.mux.HandleFunc("/rest/api/3/search/jql", func(wr http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(wr, `{"issues":[{"id":"id-CE","key":"CE-1","fields":{
+			"summary":"C","description":{"type":"doc","version":1,"content":[]},
+			"status":{"id":"100","name":"To Do","statusCategory":{"key":"new"}},
+			"labels":[],"updated":%q}}],"isLast":true}`, now.Format(jiraTimeLayout))
+	})
+	f.mux.HandleFunc("/rest/api/3/issue/id-CE/comment", func(wr http.ResponseWriter, r *http.Request) {
+		switch state.Load() {
+		case "plain":
+			fmt.Fprintf(wr, `{"comments":[{"id":"c-e","author":{"accountId":"acc-h","displayName":"H"},"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"hello team"}]}]},"created":%q}],"total":1}`, now.Format(jiraTimeLayout))
+		case "edited":
+			fmt.Fprintf(wr, `{"comments":[{"id":"c-e","author":{"accountId":"acc-h","displayName":"H"},"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"@Fixer hello team"}]}]},"created":%q}],"total":1}`, now.Format(jiraTimeLayout))
+		default:
+			wr.Write([]byte(`{"comments":[],"total":0}`))
+		}
+	})
+	w, conn, q := importFixture(t, f)
+	ctx := context.Background()
+	makeTestAgent(t, w, conn.WorkspaceID, "Fixer")
+	if _, err := w.runCycle(ctx, conn); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	state.Store("plain")
+	if _, err := w.runCycle(ctx, rewindConn(t, q, conn.ID, now.Add(-time.Hour))); err != nil {
+		t.Fatalf("plain: %v", err)
+	}
+	state.Store("edited")
+	if _, err := w.runCycle(ctx, rewindConn(t, q, conn.ID, now.Add(-time.Hour))); err != nil {
+		t.Fatalf("edited: %v", err)
+	}
+	if n := agentTaskCount(t, w, conn.WorkspaceID); n != 0 {
+		t.Fatalf("plain comment + later mention-edit fired %d runs, want 0", n)
+	}
+}
+
+// Pin (RU §10.8): a restricted Jira comment is dropped, never mirrored, never
+// fed to an agent — even with a plain @mention in its body.
+func TestRestrictedCommentNeverWakes(t *testing.T) {
+	f := newFakeJira(t)
+	now := time.Now().UTC()
+	present := atomic.Value{}
+	present.Store(false)
+	f.mux.HandleFunc("/rest/api/3/search/jql", func(wr http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(wr, `{"issues":[{"id":"id-RC","key":"RC-1","fields":{
+			"summary":"R","description":{"type":"doc","version":1,"content":[]},
+			"status":{"id":"100","name":"To Do","statusCategory":{"key":"new"}},
+			"labels":[],"updated":%q}}],"isLast":true}`, now.Format(jiraTimeLayout))
+	})
+	f.mux.HandleFunc("/rest/api/3/issue/id-RC/comment", func(wr http.ResponseWriter, r *http.Request) {
+		if present.Load() == true {
+			fmt.Fprintf(wr, `{"comments":[{"id":"c-r","author":{"accountId":"acc-h","displayName":"H"},"visibility":{"type":"role","value":"Administrators"},"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"@Fixer secret"}]}]},"created":%q}],"total":1}`, now.Format(jiraTimeLayout))
+			return
+		}
+		wr.Write([]byte(`{"comments":[],"total":0}`))
+	})
+	w, conn, q := importFixture(t, f)
+	ctx := context.Background()
+	makeTestAgent(t, w, conn.WorkspaceID, "Fixer")
+	if _, err := w.runCycle(ctx, conn); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	present.Store(true)
+	if _, err := w.runCycle(ctx, rewindConn(t, q, conn.ID, now.Add(-time.Hour))); err != nil {
+		t.Fatalf("restricted: %v", err)
+	}
+	if n := agentTaskCount(t, w, conn.WorkspaceID); n != 0 {
+		t.Fatalf("restricted comment fired %d runs, want 0", n)
+	}
+	if journalCount(t, w, conn.ID, "restricted_comment_dropped") == 0 {
+		t.Fatal("restricted comment must be journaled as dropped")
+	}
+}
+
+// Pin (RU §26.2): an ordinary label (matching no tag rule) never triggers, even
+// when route rules exist for other labels.
+func TestOrdinaryLabelNeverTriggers(t *testing.T) {
+	f := newFakeJira(t)
+	now := time.Now().UTC()
+	labels := atomic.Value{}
+	labels.Store(`[]`)
+	f.mux.HandleFunc("/rest/api/3/search/jql", func(wr http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(wr, `{"issues":[{"id":"id-OL","key":"OL-1","fields":{
+			"summary":"O","description":{"type":"doc","version":1,"content":[]},
+			"status":{"id":"100","name":"To Do","statusCategory":{"key":"new"}},
+			"labels":%s,"updated":%q}}],"isLast":true}`, labels.Load(), now.Format(jiraTimeLayout))
+	})
+	f.mux.HandleFunc("/rest/api/3/issue/id-OL/comment", func(wr http.ResponseWriter, r *http.Request) {
+		wr.Write([]byte(`{"comments":[],"total":0}`))
+	})
+	w, conn, q := importFixture(t, f)
+	ctx := context.Background()
+	agentID := makeTestAgent(t, w, conn.WorkspaceID, "Fixer")
+	conn = tagRuleConn(t, q, conn, fmt.Sprintf(`[{"match_type":"label","match_value":"route-x","agent_id":%q}]`, uuidStr(agentID)))
+	if _, err := w.runCycle(ctx, conn); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	labels.Store(`["frontend"]`) // ordinary label — not a configured route
+	if _, err := w.runCycle(ctx, rewindConn(t, q, conn.ID, now.Add(-time.Hour))); err != nil {
+		t.Fatalf("label: %v", err)
+	}
+	if n := agentTaskCount(t, w, conn.WorkspaceID); n != 0 {
+		t.Fatalf("ordinary label fired %d runs, want 0", n)
+	}
+}
+
+// Pin (RU §25): a disabled connection is never handed to the worker —
+// ListEnabledJiraConnections (the only source of cycle work) excludes it.
+func TestDisabledConnectionNotListed(t *testing.T) {
+	f := newFakeJira(t)
+	w, conn, q := importFixture(t, f)
+	ctx := context.Background()
+	if _, err := w.Pool.Exec(ctx, "UPDATE jira_connection SET enabled=false WHERE id=$1", conn.ID); err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := q.ListEnabledJiraConnections(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range enabled {
+		if c.ID == conn.ID {
+			t.Fatal("disabled connection must not be listed as enabled")
+		}
+	}
+}
