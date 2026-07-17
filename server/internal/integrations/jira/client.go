@@ -676,13 +676,3 @@ func (c *Client) ListFields(ctx context.Context) ([]JiraField, error) {
 	}
 	return out, nil
 }
-
-// GetIssueRawFields fetches the raw values of specific fields for one issue
-// (mapped-field observation on the dirty-refresh path when needed).
-func (c *Client) GetIssueRawField(ctx context.Context, issueID, fieldID string) (json.RawMessage, error) {
-	ri, err := c.GetIssue(ctx, issueID, []string{fieldID})
-	if err != nil {
-		return nil, err
-	}
-	return ri.Fields[fieldID], nil
-}

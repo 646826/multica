@@ -389,13 +389,17 @@ func (s *Service) Connect(ctx context.Context, in ConnectInput) (db.JiraConnecti
 		}
 		return zero, err
 	}
-	// The comment actor filter keys off the service account's identity.
+	// The comment actor filter keys off the service account's identity; a
+	// dropped write here silently breaks echo suppression (no re-derivation
+	// path), so it is fatal to the connect.
 	if me.AccountID != "" {
 		if uerr := s.Q.UpdateJiraConnectionServiceAccount(ctx, db.UpdateJiraConnectionServiceAccountParams{
 			ID: conn.ID, ServiceAccountID: me.AccountID,
-		}); uerr == nil {
-			conn.ServiceAccountID = me.AccountID
+		}); uerr != nil {
+			_ = s.Q.DeleteJiraConnection(ctx, conn.ID)
+			return zero, fmt.Errorf("persist service account identity: %w", uerr)
 		}
+		conn.ServiceAccountID = me.AccountID
 	}
 	return conn, nil
 }

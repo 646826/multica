@@ -39,7 +39,11 @@ var jiraTypeToProperty = map[string][]PropertyType{
 }
 
 // TypesCompatible reports whether a Jira schema type may bind to a Multica
-// property type (save-time validation).
+// property type. It is the exported FR-23 matrix consumed by the mapping
+// editor to gate unselectable pairs; runtime safety is enforced separately by
+// the skip-not-block value coercion (JiraRawToProperty / PropertyToJiraRaw,
+// FR-24), so a stored map that predates a definition change never corrupts an
+// issue.
 func TypesCompatible(jiraType string, prop PropertyType) bool {
 	for _, p := range jiraTypeToProperty[jiraType] {
 		if p == prop {

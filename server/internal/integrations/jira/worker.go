@@ -18,7 +18,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // Reconcile worker: one serial cycle per Connection (AD-1/AD-4). The worker
@@ -512,22 +511,4 @@ func (w *Worker) issueMatchesScope(ctx context.Context, client *Client, conn db.
 		return false, err
 	}
 	return len(found) > 0, nil
-}
-
-// busIssueAssignedEvent shapes an issue:updated event for tag-rule
-// assignments so native dispatch (WillEnqueueRun) sees the assignee change.
-func busIssueAssignedEvent(conn db.JiraConnection, issue db.Issue) events.Event {
-	return events.Event{
-		Type:        protocol.EventIssueUpdated,
-		WorkspaceID: uuidStr(conn.WorkspaceID),
-		ActorType:   "system",
-		ActorID:     "",
-		Payload: map[string]any{
-			"issue_id":      uuidStr(issue.ID),
-			"assignee_type": "agent",
-			"assignee_id":   uuidStr(issue.AssigneeID),
-			"status":        issue.Status,
-			"source":        "jira_tag_rule",
-		},
-	}
 }

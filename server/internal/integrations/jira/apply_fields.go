@@ -26,6 +26,9 @@ func (w *Worker) applyInField(ctx context.Context, conn db.JiraConnection, issue
 	}
 	propUUID, perr := parsePropertyUUID(propertyID)
 	if perr != nil {
+		_ = w.Journal.Record(ctx, conn, cycleID, JournalFieldSkipped, issueID, "", map[string]any{
+			"external_field": external, "property_id": propertyID, "reason": "invalid property id in field_map",
+		})
 		return nil
 	}
 	// The property definition must exist (values only, never created).
@@ -74,24 +77,24 @@ func parsePropertyUUID(s string) (pgtype.UUID, error) {
 }
 
 // jiraFieldType resolves a Jira field's schema type from the live catalog.
-// Unknown → "string" (safest text coercion). A per-connection cache is a
-// future optimization; field writes are low-volume in v1.
-func (w *Worker) jiraFieldType(ctx context.Context, conn db.JiraConnection, fieldID string) string {
+// ok=false means the catalog could not be fetched (transient) — the caller
+// skips the field rather than coercing it via a wrong default. A field that
+// is genuinely absent from the catalog returns ("string", true) as a safe
+// text fallback. A per-connection cache is a future optimization; field
+// writes are low-volume in v1.
+func (w *Worker) jiraFieldType(ctx context.Context, conn db.JiraConnection, fieldID string) (string, bool) {
 	client, err := w.Svc.ClientFor(conn)
 	if err != nil {
-		return "string"
+		return "", false
 	}
 	fields, err := client.ListFields(ctx)
 	if err != nil {
-		return "string"
+		return "", false
 	}
 	for _, f := range fields {
-		if f.ID == fieldID {
-			if f.Schema.Type != "" {
-				return f.Schema.Type
-			}
-			return "string"
+		if f.ID == fieldID && f.Schema.Type != "" {
+			return f.Schema.Type, true
 		}
 	}
-	return "string"
+	return "string", true
 }

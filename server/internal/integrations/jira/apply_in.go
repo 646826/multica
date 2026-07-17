@@ -231,10 +231,14 @@ func (w *Worker) updateIssueOnce(ctx context.Context, conn db.JiraConnection, sm
 		DescriptionMD: CanonicalMarkdown(issue.Description.String),
 		Status:        issue.Status,
 	}
-	if labelRows, lerr := w.Q.ListLabelsByIssue(ctx, db.ListLabelsByIssueParams{IssueID: issue.ID, WorkspaceID: conn.WorkspaceID}); lerr == nil {
-		for _, l := range labelRows {
-			loc.Labels = append(loc.Labels, l.Name)
-		}
+	labelRows, lerr := w.Q.ListLabelsByIssue(ctx, db.ListLabelsByIssueParams{IssueID: issue.ID, WorkspaceID: conn.WorkspaceID})
+	if lerr != nil {
+		// A read failure here would leave loc.Labels empty and the planner
+		// could remove every propagated label — fail into the dirty ladder.
+		return fmt.Errorf("load issue labels: %w", lerr)
+	}
+	for _, l := range labelRows {
+		loc.Labels = append(loc.Labels, l.Name)
 	}
 	loc.Fields = map[string]string{}
 	if len(issue.Properties) > 0 {
@@ -369,7 +373,13 @@ func (w *Worker) updateIssueOnce(ctx context.Context, conn db.JiraConnection, sm
 		if !ok {
 			continue
 		}
-		jt := w.jiraFieldType(ctx, conn, external)
+		jt, jok := w.jiraFieldType(ctx, conn, external)
+		if !jok {
+			_ = w.Journal.Record(ctx, conn, cycleID, JournalFieldSkipped, issue.ID, link.JiraKey, map[string]any{
+				"external_field": external, "reason": "jira field catalog unavailable",
+			})
+			continue
+		}
 		wire, wok := PropertyToJiraRaw(json.RawMessage(act.Value), jt)
 		if !wok {
 			_ = w.Journal.Record(ctx, conn, cycleID, JournalFieldSkipped, issue.ID, link.JiraKey, map[string]any{
@@ -677,6 +687,9 @@ func (w *Worker) wakeMentionedAgents(ctx context.Context, conn db.JiraConnection
 	}
 	issue, err := w.Q.GetIssue(ctx, link.IssueID)
 	if err != nil {
+		_ = w.Journal.Record(ctx, conn, cycleID, JournalMentionDenied, link.IssueID, link.JiraKey, map[string]any{
+			"reason": "load issue for mention wake failed", "error": redactError(err),
+		})
 		return
 	}
 	for _, agentID := range agentIDs {
