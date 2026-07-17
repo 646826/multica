@@ -268,3 +268,131 @@ func TestDisabledConnectionNotListed(t *testing.T) {
 		}
 	}
 }
+
+// End-to-end (RU §12.2): a human moves Jira to a terminal status, then the agent
+// completes locally. The next cycle takes the local-only outbound path (Jira not
+// re-observed) — the guard must suppress the transition off the human terminal.
+func TestNoOutboundTransitionOffHumanTerminal(t *testing.T) {
+	f := newFakeJira(t)
+	now := time.Now().UTC()
+	phase := atomic.Value{}
+	phase.Store("open")
+	var transitions atomic.Int64
+	f.mux.HandleFunc("/rest/api/3/search/jql", func(wr http.ResponseWriter, r *http.Request) {
+		switch phase.Load() {
+		case "open":
+			fmt.Fprintf(wr, `{"issues":[{"id":"id-T","key":"T-1","fields":{
+				"summary":"T","description":{"type":"doc","version":1,"content":[]},
+				"status":{"id":"100","name":"To Do","statusCategory":{"key":"new"}},
+				"labels":[],"updated":%q}}],"isLast":true}`, now.Add(-2*time.Hour).Format(jiraTimeLayout))
+		case "cancelled":
+			fmt.Fprintf(wr, `{"issues":[{"id":"id-T","key":"T-1","fields":{
+				"summary":"T","description":{"type":"doc","version":1,"content":[]},
+				"status":{"id":"900","name":"Cancelled","statusCategory":{"key":"done"}},
+				"labels":[],"updated":%q}}],"isLast":true}`, now.Add(-time.Hour).Format(jiraTimeLayout))
+		default:
+			wr.Write([]byte(`{"issues":[],"isLast":true}`))
+		}
+	})
+	f.mux.HandleFunc("/rest/api/3/issue/id-T/comment", func(wr http.ResponseWriter, r *http.Request) {
+		wr.Write([]byte(`{"comments":[],"total":0}`))
+	})
+	f.mux.HandleFunc("/rest/api/3/issue/id-T/transitions", func(wr http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			transitions.Add(1)
+			wr.WriteHeader(http.StatusNoContent)
+			return
+		}
+		wr.Write([]byte(`{"transitions":[{"id":"t-done","to":{"id":"800","name":"Done"}}]}`))
+	})
+	w, conn, q := importFixture(t, f)
+	ctx := context.Background()
+	conn, _ = q.UpdateJiraConnectionConfig(ctx, db.UpdateJiraConnectionConfigParams{
+		ID: conn.ID, Enabled: true, Mode: "two_way", LeadingSystem: "jira",
+		CommentsEnabled: true, LabelsEnabled: true, CustomFieldsEnabled: true,
+		CreateFromJira: true, CreateToJira: false, JqlFilter: "", LabelPrefix: "",
+		MentionBridgeEnabled: true, OutboundIssueType: "Task",
+		StatusMap: []byte(`{"in":{"100":"todo","900":"cancelled"},"out":{"todo":"100","cancelled":"900","done":"800"}}`),
+		FieldMap:  []byte(`[]`), TagRules: []byte(`[]`), CycleIntervalSeconds: 45,
+	})
+	setCursors := func(to time.Time) db.JiraConnection {
+		_ = q.UpdateJiraConnectionCursors(ctx, db.UpdateJiraConnectionCursorsParams{
+			ID: conn.ID, JiraCursor: pgtype.Timestamptz{Time: to, Valid: true}, LocalCursor: pgtype.Timestamptz{Time: to, Valid: true}})
+		c, _ := q.GetJiraConnectionByID(ctx, conn.ID)
+		return c
+	}
+	// Cycle 1: import at status 100.
+	if _, err := w.runCycle(ctx, conn); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	link, _ := q.GetJiraLinkByJiraIssueID(ctx, db.GetJiraLinkByJiraIssueIDParams{ConnectionID: conn.ID, JiraIssueID: "id-T"})
+	// Cycle 2: a human moves Jira to Cancelled (done category) → pulled in.
+	phase.Store("cancelled")
+	if _, err := w.runCycle(ctx, setCursors(now.Add(-90*time.Minute))); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if issue, _ := q.GetIssue(ctx, link.IssueID); issue.Status != "cancelled" {
+		t.Fatalf("human cancel must be pulled, got %q", issue.Status)
+	}
+	// The agent completes locally; Jira stays quiet.
+	if _, err := q.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{ID: link.IssueID, Status: "done", WorkspaceID: conn.WorkspaceID}); err != nil {
+		t.Fatal(err)
+	}
+	phase.Store("quiet")
+	// Cycle 3: local-only outbound path — the guard must suppress the transition.
+	if _, err := w.runCycle(ctx, setCursors(now.Add(-30*time.Minute))); err != nil {
+		t.Fatalf("local-only: %v", err)
+	}
+	if transitions.Load() != 0 {
+		t.Fatalf("agent completion must NOT transition Jira off a human terminal, got %d", transitions.Load())
+	}
+	if journalCount(t, w, conn.ID, "status_terminal_guard") == 0 {
+		t.Fatal("terminal guard must be journaled")
+	}
+}
+
+// A single agent reached by BOTH a label rule and an assignee rule in one
+// observation is not ambiguous (dedup by target agent) — it assigns normally.
+func TestSingleAgentViaTwoRulesNotAmbiguous(t *testing.T) {
+	f := newFakeJira(t)
+	now := time.Now().UTC()
+	sig := atomic.Value{}
+	sig.Store("none")
+	f.mux.HandleFunc("/rest/api/3/search/jql", func(wr http.ResponseWriter, r *http.Request) {
+		if sig.Load() == "both" {
+			fmt.Fprintf(wr, `{"issues":[{"id":"id-SA","key":"SA-1","fields":{
+				"summary":"S","description":{"type":"doc","version":1,"content":[]},
+				"status":{"id":"100","name":"To Do","statusCategory":{"key":"new"}},
+				"assignee":{"accountId":"acc-x"},"labels":["route-x"],"updated":%q}}],"isLast":true}`, now.Format(jiraTimeLayout))
+			return
+		}
+		fmt.Fprintf(wr, `{"issues":[{"id":"id-SA","key":"SA-1","fields":{
+			"summary":"S","description":{"type":"doc","version":1,"content":[]},
+			"status":{"id":"100","name":"To Do","statusCategory":{"key":"new"}},
+			"labels":[],"updated":%q}}],"isLast":true}`, now.Format(jiraTimeLayout))
+	})
+	f.mux.HandleFunc("/rest/api/3/issue/id-SA/comment", func(wr http.ResponseWriter, r *http.Request) {
+		wr.Write([]byte(`{"comments":[],"total":0}`))
+	})
+	w, conn, q := importFixture(t, f)
+	ctx := context.Background()
+	agentID := makeTestAgent(t, w, conn.WorkspaceID, "Solo")
+	conn = tagRuleConn(t, q, conn, fmt.Sprintf(
+		`[{"match_type":"label","match_value":"route-x","agent_id":%q},{"match_type":"assignee","match_value":"acc-x","agent_id":%q}]`,
+		uuidStr(agentID), uuidStr(agentID)))
+	if _, err := w.runCycle(ctx, conn); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	link, _ := q.GetJiraLinkByJiraIssueID(ctx, db.GetJiraLinkByJiraIssueIDParams{ConnectionID: conn.ID, JiraIssueID: "id-SA"})
+	sig.Store("both")
+	if _, err := w.runCycle(ctx, rewindConn(t, q, conn.ID, now.Add(-time.Hour))); err != nil {
+		t.Fatalf("both: %v", err)
+	}
+	issue, _ := q.GetIssue(ctx, link.IssueID)
+	if issue.AssigneeType.String != "agent" || issue.AssigneeID != agentID {
+		t.Fatalf("one agent via two signals must assign, not block: %+v", issue)
+	}
+	if journalCount(t, w, conn.ID, "tag_ambiguous") != 0 {
+		t.Fatal("single agent via two rules must not be flagged ambiguous")
+	}
+}

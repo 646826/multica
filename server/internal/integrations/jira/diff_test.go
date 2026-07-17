@@ -304,3 +304,34 @@ func TestPlanStatusAllowsNonTerminalOutbound(t *testing.T) {
 		t.Fatalf("non-terminal remote must still transition to 300, got %+v", acts)
 	}
 }
+
+// The critical path: the remote is NOT observed this cycle (local-only outbound,
+// the primary Multica→Jira status push). The snapshot remembers Jira is terminal
+// (a human moved it to Done/Cancelled on an earlier cycle). The guard must still
+// fire off the snapshot category — this is the exact path a human-cancel then
+// agent-complete race takes.
+func TestPlanStatusGuardsTerminalOnLocalOnlyPath(t *testing.T) {
+	s := Settings{Mode: ModeMulticaLeads, LeadingSystem: LeadMultica}
+	in := PlanInput{
+		Settings:  s,
+		Items:     ItemsV1{V: 1, Status: StatusState{RemoteID: "900", RemoteCategory: "done", Local: "cancelled"}},
+		Remote:    nil, // remote not observed this cycle
+		Local:     &LocalIssue{Status: "done"},
+		StatusMap: StatusMap{In: map[string]string{"900": "cancelled"}, Out: map[string]string{"done": "800"}},
+	}
+	acts := planStatus(in, EffectiveLeading(s))
+	for _, a := range acts {
+		if a.Kind == ActOutTransition {
+			t.Fatalf("transitioned off a terminal remote on the local-only path: %+v", a)
+		}
+	}
+	found := false
+	for _, a := range acts {
+		if a.Kind == ActSkip && a.Journal == JournalStatusTerminalGuard {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected terminal-guard skip on local-only path, got %+v", acts)
+	}
+}

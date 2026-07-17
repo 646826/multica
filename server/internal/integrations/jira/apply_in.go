@@ -172,7 +172,7 @@ func seededImportItems(obs ObservedIssue, sm StatusMap) ([]byte, error) {
 	if localStatus == "" {
 		localStatus = "backlog"
 	}
-	items.Status = StatusState{RemoteID: obs.StatusID, Local: localStatus}
+	items.Status = StatusState{RemoteID: obs.StatusID, RemoteCategory: obs.StatusCategory, Local: localStatus}
 	// Trigger safety (RU §25): every signal present at import is recorded as
 	// already-fired, so a pre-existing label/assignee is context — never a
 	// first-cycle edge. Only signals that CHANGE after import can trigger.
@@ -295,7 +295,7 @@ func (w *Worker) updateIssueOnce(ctx context.Context, conn db.JiraConnection, sm
 				return fmt.Errorf("apply status: %w", uerr)
 			}
 			w.publishIssueUpdated(conn, updated)
-			items.Status = StatusState{RemoteID: act.Value, Local: act.Target, BreadcrumbFor: items.Status.BreadcrumbFor}
+			items.Status = StatusState{RemoteID: act.Value, RemoteCategory: observedCategory(obs), Local: act.Target, BreadcrumbFor: items.Status.BreadcrumbFor}
 			issue.Status = act.Target
 			statusTouched = true
 		case ActBreadcrumbIn:
@@ -768,8 +768,19 @@ func (w *Worker) applyOutTransition(ctx context.Context, conn db.JiraConnection,
 	if items.Status.UnreachableFor != "" {
 		_ = w.Journal.Record(ctx, conn, cycleID, JournalTransitionRecovered, link.IssueID, link.JiraKey, nil)
 	}
-	items.Status = StatusState{RemoteID: act.Target, Local: act.Value, BreadcrumbFor: items.Status.BreadcrumbFor}
+	// Carry the last-synced remote category forward; the next observe refreshes
+	// it. (We do not know the target status's category without a fetch.)
+	items.Status = StatusState{RemoteID: act.Target, Local: act.Value, RemoteCategory: items.Status.RemoteCategory, BreadcrumbFor: items.Status.BreadcrumbFor}
 	return nil
+}
+
+// observedCategory is the Jira status category of an observation, or "" when
+// the remote was not observed this cycle.
+func observedCategory(obs *ObservedIssue) string {
+	if obs == nil {
+		return ""
+	}
+	return obs.StatusCategory
 }
 
 // markBreadcrumb records that a breadcrumb has been posted for a discarded

@@ -98,9 +98,13 @@ type ItemState struct {
 }
 
 type StatusState struct {
-	RemoteID      string `json:"remote_id,omitempty"`
-	Local         string `json:"local,omitempty"`
-	BreadcrumbFor string `json:"breadcrumb_for,omitempty"`
+	RemoteID string `json:"remote_id,omitempty"`
+	// RemoteCategory is the Jira status category (new|indeterminate|done) of the
+	// last-synced remote status. Persisted so the terminal-stop guard works on
+	// the local-only outbound path, where the remote is not observed this cycle.
+	RemoteCategory string `json:"remote_category,omitempty"`
+	Local          string `json:"local,omitempty"`
+	BreadcrumbFor  string `json:"breadcrumb_for,omitempty"`
 	// UnreachableFor suppresses re-journaling the same doomed transition
 	// every cycle: SHA(local status + target id) of the last loud failure,
 	// cleared when the local status changes or the transition succeeds.
@@ -365,14 +369,20 @@ func planStatus(in PlanInput, leading string) []Action {
 		if mapped, ok := in.StatusMap.In[currentRemoteID]; ok && mapped == in.Local.Status {
 			return
 		}
-		// Terminal-stop safety (RU §12.2): the sides genuinely differ, but a
-		// human moved Jira into a Done category (Done/Cancelled). Never cross
-		// that with a late automated transition — suppress and surface it. Only
-		// applies when the remote is observed this cycle (in.Remote != nil).
-		if in.Remote != nil && in.Remote.StatusCategory == "done" {
+		// Terminal-stop safety (RU §12.2): the sides genuinely differ, but Jira
+		// is in a Done category (a human moved it to Done/Cancelled). Never cross
+		// that with a late automated transition — suppress and surface it. Reads
+		// the SNAPSHOT category so it also fires on the local-only outbound path
+		// (remote unobserved this cycle) — the exact path a human-cancel-then-
+		// agent-complete race takes; the terminal snapshot was stored by the
+		// earlier inbound pull.
+		remoteCategory := in.Items.Status.RemoteCategory
+		if in.Remote != nil {
+			remoteCategory = in.Remote.StatusCategory
+		}
+		if remoteCategory == "done" {
 			out = append(out, Action{Kind: ActSkip, Item: "status", Journal: JournalStatusTerminalGuard,
-				Detail: map[string]any{"jira_status_id": in.Remote.StatusID, "jira_status": in.Remote.StatusName,
-					"multica_status": in.Local.Status}})
+				Detail: map[string]any{"jira_status_id": currentRemoteID, "multica_status": in.Local.Status}})
 			return
 		}
 		targetID, ok := in.StatusMap.Out[in.Local.Status]
