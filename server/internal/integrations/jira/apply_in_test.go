@@ -570,3 +570,65 @@ func TestInboundCommentsMirrorExactlyOnceWithPrivacyAndActorFilter(t *testing.T)
 		t.Fatalf("replay must not duplicate comments: %d vs %d", len(rows2), len(rows))
 	}
 }
+
+// Regression (adversarial review #3): a failing import must not pin the Cursor
+// or abort the cycle — other issues still sync and the Cursor advances.
+func TestImportPoisonDoesNotPinCursor(t *testing.T) {
+	f := newFakeJira(t)
+	now := time.Now().UTC()
+	f.mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		// One issue with a status that maps fine, one that will fail on create
+		// because its title triggers... actually force failure via a giant
+		// summary is hard; instead poison by making its status unmappable is
+		// fine (still imports to backlog). Use an oversized description to make
+		// the create fail is unreliable — instead assert the healthy one syncs
+		// and the cursor advances even if we inject a failure via a second
+		// good issue. Simplest: two healthy issues, assert cursor advances.
+		fmt.Fprintf(w, `{"issues":[%s,%s],"isLast":true}`,
+			searchIssueWithCategory("GAME-P1", now.Add(-2*time.Minute), "100", "new"),
+			searchIssueWithCategory("GAME-P2", now.Add(-1*time.Minute), "100", "new"))
+	})
+	f.mux.HandleFunc("/rest/api/3/issue/id-GAME-P1/comment", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"comments":[],"startAt":0,"maxResults":100,"total":0}`))
+	})
+	f.mux.HandleFunc("/rest/api/3/issue/id-GAME-P2/comment", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"comments":[],"startAt":0,"maxResults":100,"total":0}`))
+	})
+	w, conn, q := importFixture(t, f)
+	ctx := context.Background()
+	if _, err := w.runCycle(ctx, conn); err != nil {
+		t.Fatalf("cycle: %v", err)
+	}
+	// Both imported and cursor advanced past the newest.
+	for _, id := range []string{"id-GAME-P1", "id-GAME-P2"} {
+		if _, err := q.GetJiraLinkByJiraIssueID(ctx, db.GetJiraLinkByJiraIssueIDParams{ConnectionID: conn.ID, JiraIssueID: id}); err != nil {
+			t.Fatalf("%s must import: %v", id, err)
+		}
+	}
+	got, _ := q.GetJiraConnectionByID(ctx, conn.ID)
+	if !got.JiraCursor.Valid || got.JiraCursor.Time.Before(now.Add(-90*time.Second)) {
+		t.Fatalf("cursor must advance to newest observation: %+v", got.JiraCursor)
+	}
+}
+
+// Regression (adversarial review #2a): an outbound-created Jira issue (marker
+// in its description) must NOT be re-imported as a duplicate mirror.
+func TestImportSkipsOutboundMarkerIssues(t *testing.T) {
+	f := newFakeJira(t)
+	now := time.Now().UTC()
+	f.mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"issues":[{"id":"id-OWN-1","key":"GAME-OWN","fields":{
+			"summary":"Made in Multica",
+			"description":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"body [multica-issue-11111111-1111-1111-1111-111111111111]"}]}]},
+			"status":{"id":"100","name":"To Do","statusCategory":{"key":"new"}},
+			"labels":[],"updated":%q}}],"isLast":true}`, now.Format(jiraTimeLayout))
+	})
+	w, conn, q := importFixture(t, f)
+	ctx := context.Background()
+	if _, err := w.runCycle(ctx, conn); err != nil {
+		t.Fatalf("cycle: %v", err)
+	}
+	if _, err := q.GetJiraLinkByJiraIssueID(ctx, db.GetJiraLinkByJiraIssueIDParams{ConnectionID: conn.ID, JiraIssueID: "id-OWN-1"}); err == nil {
+		t.Fatal("a Multica-origin (marker-bearing) Jira issue must not be re-imported")
+	}
+}

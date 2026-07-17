@@ -182,6 +182,14 @@ func (w *Worker) cycleBody(ctx context.Context, conn db.JiraConnection, cycleID 
 		return client.Requests(), err
 	}
 
+	// Resolve outbound issue creations first (AD-15): finalize any pending
+	// create (adopt-or-create) before the observe loop, so a Multica-origin
+	// Jira issue is never seen as a new inbound issue mid-flight. The inbound
+	// importer additionally skips marker-bearing issues (belt and suspenders).
+	if err := w.syncOutboundCreates(ctx, conn, cycleID); err != nil {
+		return client.Requests(), err
+	}
+
 	observed, truncated, err := observeJira(ctx, client, conn, fieldIDs)
 	if err != nil {
 		return client.Requests(), err
@@ -206,14 +214,21 @@ func (w *Worker) cycleBody(ctx context.Context, conn db.JiraConnection, cycleID 
 		case errors.Is(lerr, pgx.ErrNoRows):
 			if conn.CreateFromJira {
 				if err := w.importIssue(ctx, conn, sm, obs, cycleID); err != nil {
-					return client.Requests(), err
+					// Poison isolation (AD-2/NFR-3): a failing import journals
+					// and is skipped; its pending link makes the next cycle
+					// retry, and the Cursor still advances past it.
+					_ = w.Journal.Record(ctx, conn, cycleID, JournalItemDirty, pgtype.UUID{}, obs.Key, map[string]any{
+						"error": redactError(err), "at": "import",
+					})
 				}
 			}
 		case lerr != nil:
 			return client.Requests(), lerr
 		case link.State == "pending":
 			if err := w.importIssue(ctx, conn, sm, obs, cycleID); err != nil {
-				return client.Requests(), err
+				_ = w.Journal.Record(ctx, conn, cycleID, JournalItemDirty, link.IssueID, obs.Key, map[string]any{
+					"error": redactError(err), "at": "import_retry",
+				})
 			}
 		case link.State == "ok":
 			seenLinked = append(seenLinked, obs.ID)
@@ -322,10 +337,6 @@ func (w *Worker) cycleBody(ctx context.Context, conn db.JiraConnection, cycleID 
 			CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 		}
 		w.updateIssue(ctx, conn, sm, fieldRows, link, nil, cycleID)
-	}
-
-	if err := w.syncOutboundCreates(ctx, conn, cycleID); err != nil {
-		return client.Requests(), err
 	}
 
 	if err := w.syncOutboundComments(ctx, conn, cycleID); err != nil {

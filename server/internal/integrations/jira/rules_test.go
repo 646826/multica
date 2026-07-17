@@ -356,3 +356,68 @@ func TestRoundTripLabelToAgentToJira(t *testing.T) {
 	// the Jira label alone. (Assertion is structural — the test performed no
 	// member action.)
 }
+
+// Regression (adversarial review #5): a rule whose agent does not yet exist
+// must NOT consume the edge — it fires once the agent is created.
+func TestTagRuleReFiresAfterAgentAppears(t *testing.T) {
+	f := newFakeJira(t)
+	now := time.Now().UTC()
+	f.mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"issues":[{"id":"id-GAME-A1","key":"GAME-A1","fields":{
+			"summary":"B","description":{"type":"doc","version":1,"content":[]},
+			"status":{"id":"100","name":"To Do","statusCategory":{"key":"new"}},
+			"labels":["agent:later"],"updated":%q}}],"isLast":true}`, now.Format(jiraTimeLayout))
+	})
+	f.mux.HandleFunc("/rest/api/3/issue/id-GAME-A1/comment", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"comments":[],"startAt":0,"maxResults":100,"total":0}`))
+	})
+	w, conn, q := importFixture(t, f)
+	ctx := context.Background()
+	// Rule references an agent id that does not exist yet.
+	missing := uuidStr(pgtype.UUID{Bytes: uuid.New(), Valid: true})
+	conn = tagRuleConn(t, q, conn, fmt.Sprintf(`[{"match_type":"label","match_value":"agent:later","agent_id":%q}]`, missing))
+
+	rewind := func() db.JiraConnection {
+		c, _ := q.GetJiraConnectionByID(ctx, conn.ID)
+		_ = q.UpdateJiraConnectionCursors(ctx, db.UpdateJiraConnectionCursorsParams{
+			ID: conn.ID, JiraCursor: pgtype.Timestamptz{Time: now.Add(-time.Hour), Valid: true}, LocalCursor: c.LocalCursor})
+		c, _ = q.GetJiraConnectionByID(ctx, conn.ID)
+		return c
+	}
+	if _, err := w.runCycle(ctx, conn); err != nil {
+		t.Fatalf("cycle: %v", err)
+	}
+	link, _ := q.GetJiraLinkByJiraIssueID(ctx, db.GetJiraLinkByJiraIssueIDParams{ConnectionID: conn.ID, JiraIssueID: "id-GAME-A1"})
+	issue, _ := q.GetIssue(ctx, link.IssueID)
+	if issue.AssigneeType.String == "agent" {
+		t.Fatal("must not assign a non-existent agent")
+	}
+
+	// Create the agent with the SAME id the rule references, re-run: the edge
+	// was not consumed, so it fires now.
+	if _, err := w.Pool.Exec(ctx, "INSERT INTO agent_runtime (workspace_id, name, runtime_mode, provider) VALUES ($1,'rt','local','claude')", conn.WorkspaceID); err != nil {
+		t.Fatal(err)
+	}
+	var rid pgtype.UUID
+	_ = w.Pool.QueryRow(ctx, "SELECT id FROM agent_runtime WHERE workspace_id=$1 LIMIT 1", conn.WorkspaceID).Scan(&rid)
+	if _, err := w.Pool.Exec(ctx, "INSERT INTO agent (id, workspace_id, name, kind, runtime_mode, runtime_id) VALUES ($1,$2,'Later','user','local',$3)",
+		pgtype.UUID{Bytes: mustParseUUID(t, missing), Valid: true}, conn.WorkspaceID, rid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.runCycle(ctx, rewind()); err != nil {
+		t.Fatalf("re-fire cycle: %v", err)
+	}
+	issue, _ = q.GetIssue(ctx, link.IssueID)
+	if issue.AssigneeType.String != "agent" {
+		t.Fatalf("rule must fire once the agent exists (edge not consumed): %+v", issue)
+	}
+}
+
+func mustParseUUID(t *testing.T, s string) [16]byte {
+	t.Helper()
+	u, err := uuid.Parse(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
+}

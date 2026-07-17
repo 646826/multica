@@ -64,15 +64,17 @@ func (w *Worker) applyTagRules(ctx context.Context, conn db.JiraConnection, issu
 		newFiredAssignee = ""
 	}
 
-	// Persist the edge-tracking sets regardless of whether we assign.
-	items.Tag.FiredLabels = setKeys(newFiredLabels)
-	items.Tag.FiredAssignee = newFiredAssignee
-
 	if edgeAgent == "" {
+		// No edge to act on: persist the current signal sets and return.
+		items.Tag.FiredLabels = setKeys(newFiredLabels)
+		items.Tag.FiredAssignee = newFiredAssignee
 		return false, nil
 	}
 
-	// Validate the agent exists in the workspace (FR-26).
+	// Validate the agent exists in the workspace (FR-26). A missing/invalid
+	// agent is a transient config error: do NOT consume the edge, so the rule
+	// fires once the agent is created (unlike the human-precedence guard,
+	// which per FR-27 keeps the edge until the signal changes again).
 	agentUUID, perr := parsePropertyUUID(edgeAgent)
 	if perr != nil {
 		w.journalTagSkip(ctx, conn, issue.ID, obs.Key, cycleID, "invalid agent id", edgeVia)
@@ -82,6 +84,10 @@ func (w *Worker) applyTagRules(ctx context.Context, conn db.JiraConnection, issu
 		w.journalTagSkip(ctx, conn, issue.ID, obs.Key, cycleID, "agent not found in workspace", edgeVia)
 		return false, nil
 	}
+
+	// From here the edge is genuinely consumed (assigned or human-guarded).
+	items.Tag.FiredLabels = setKeys(newFiredLabels)
+	items.Tag.FiredAssignee = newFiredAssignee
 
 	// Human-precedence guard (FR-27): apply when unassigned, or when the issue
 	// is already assigned to exactly the agent sync last assigned. Any other

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -27,6 +29,11 @@ import (
 // id — the AD-15 crash-window resolver looks it up before ever re-creating.
 const markerKey = "jira_sync_id"
 
+// outboundMarkerRe recognizes a Jira issue that sync itself created (its
+// description footer carries the multica-issue marker). The inbound importer
+// skips these so a Multica-origin issue is never re-imported as a duplicate.
+var outboundMarkerRe = regexp.MustCompile(`multica-issue-[0-9a-f-]{36}`)
+
 // importIssue realizes FR-10 for one observed, un-Linked Jira issue:
 // claim (pending Link) → resolve (marker adoption) → create (service path)
 // → stamp (marker) → finalize (Link + seeded snapshots). Exactly-once effect
@@ -36,6 +43,12 @@ func (w *Worker) importIssue(ctx context.Context, conn db.JiraConnection, sm Sta
 	// Non-terminal gate (FR-10): issues whose Jira status category is Done
 	// never import — neither at first enable nor when appearing later.
 	if obs.StatusCategory == "done" {
+		return nil
+	}
+	// Skip our own outbound-created issues: their description carries the
+	// multica-issue marker, and the outbound adopt pass owns finalizing them.
+	// Importing here would create a duplicate mirror of a Multica-origin issue.
+	if outboundMarkerRe.MatchString(obs.DescriptionMD) {
 		return nil
 	}
 
@@ -94,24 +107,39 @@ func (w *Worker) importIssue(ctx context.Context, conn db.JiraConnection, sm Sta
 		return fmt.Errorf("create mirror issue: %w", err)
 	}
 
+	// Atomically stamp the adopt marker AND finalize the link: after this tx
+	// commits, a re-import finds either the marker (adopt) or a non-pending
+	// link (skip) — no duplicate. The only residual is a crash in the gap
+	// between the Issues.Create commit and this tx (documented accepted
+	// residual, AD-15): a re-import then re-creates once, self-corrected the
+	// moment the marker lands. That window is a few statements wide.
 	markerValue, _ := json.Marshal(obs.ID)
-	if _, err := w.Q.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{
-		ID:          res.Issue.ID,
-		WorkspaceID: conn.WorkspaceID,
-		Key:         markerKey,
-		Value:       markerValue,
-	}); err != nil {
-		// Marker failure narrows exactly to the documented residual window;
-		// finalize still proceeds (the Link itself is the primary identity).
-		_ = w.Journal.Record(ctx, conn, cycleID, JournalImportMarkerFailed, res.Issue.ID, obs.Key, map[string]any{
-			"error": redactError(err),
-		})
+	itemsRaw, ierr := seededImportItems(obs, sm)
+	if ierr != nil {
+		return ierr
 	}
-
-	if err := w.finalizeImport(ctx, link, res.Issue.ID, obs, sm); err != nil {
+	tx, err := w.Pool.Begin(ctx)
+	if err != nil {
 		return err
 	}
+	qtx := w.Q.WithTx(tx)
+	if _, merr := qtx.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{
+		ID: res.Issue.ID, WorkspaceID: conn.WorkspaceID, Key: markerKey, Value: markerValue,
+	}); merr != nil {
+		_ = tx.Rollback(ctx)
+		return fmt.Errorf("stamp import marker: %w", merr)
+	}
+	if ferr := qtx.FinalizeJiraLinkInbound(ctx, db.FinalizeJiraLinkInboundParams{
+		ID: link.ID, IssueID: res.Issue.ID, JiraKey: obs.Key, Items: itemsRaw,
+	}); ferr != nil {
+		_ = tx.Rollback(ctx)
+		return fmt.Errorf("finalize import: %w", ferr)
+	}
+	if cerr := tx.Commit(ctx); cerr != nil {
+		return cerr
+	}
 	link.IssueID = res.Issue.ID
+	link.State = "ok"
 	if cerr := w.mirrorComments(ctx, conn, link, cycleID); cerr != nil {
 		_ = w.Journal.Record(ctx, conn, cycleID, JournalItemDirty, res.Issue.ID, obs.Key, map[string]any{
 			"error": redactError(cerr), "at": "import_comments",
@@ -122,7 +150,20 @@ func (w *Worker) importIssue(ctx context.Context, conn db.JiraConnection, sm Sta
 
 // finalizeImport seeds the two-sided snapshots from the imported values: both
 // sides now agree by construction, so the next cycle sees a quiescent pair.
+// Used by the marker-adoption path (the create path finalizes in its own tx).
 func (w *Worker) finalizeImport(ctx context.Context, link db.JiraLink, issueID pgtype.UUID, obs ObservedIssue, sm StatusMap) error {
+	raw, err := seededImportItems(obs, sm)
+	if err != nil {
+		return err
+	}
+	return w.Q.FinalizeJiraLinkInbound(ctx, db.FinalizeJiraLinkInboundParams{
+		ID: link.ID, IssueID: issueID, JiraKey: obs.Key, Items: raw,
+	})
+}
+
+// seededImportItems builds the initial two-sided snapshot for an imported
+// issue: both sides agree by construction so the next cycle is quiescent.
+func seededImportItems(obs ObservedIssue, sm StatusMap) ([]byte, error) {
 	items := ItemsV1{V: 1, Fields: map[string]ItemState{}}
 	items.Title = ItemState{RemoteSHA: SHA(obs.Summary), LocalSHA: SHA(obs.Summary)}
 	items.Description = ItemState{RemoteSHA: SHA(obs.DescriptionMD), LocalSHA: SHA(obs.DescriptionMD)}
@@ -131,18 +172,7 @@ func (w *Worker) finalizeImport(ctx context.Context, link db.JiraLink, issueID p
 		localStatus = "backlog"
 	}
 	items.Status = StatusState{RemoteID: obs.StatusID, Local: localStatus}
-	// Labels deliberately start empty: the labels facet (Story 5.1) pulls
-	// them on its first cycle through the normal planner path.
-	raw, err := json.Marshal(items)
-	if err != nil {
-		return err
-	}
-	return w.Q.FinalizeJiraLinkInbound(ctx, db.FinalizeJiraLinkInboundParams{
-		ID:      link.ID,
-		IssueID: issueID,
-		JiraKey: obs.Key,
-		Items:   raw,
-	})
+	return json.Marshal(items)
 }
 
 // --- Inbound updates (Story 2.4) ---
@@ -375,14 +405,43 @@ func (w *Worker) updateIssueOnce(ctx context.Context, conn db.JiraConnection, sm
 			}
 		}
 		var refreshed *ObservedIssue
-		if len(outApply) > 0 {
-			if ri, gerr := client.GetIssue(ctx, link.JiraIssueID, nil); gerr == nil {
+		var refreshedFields map[string]string
+		needFieldReadback := false
+		for k := range outFields {
+			if k != "summary" && k != "description" && k != "labels" {
+				needFieldReadback = true
+			}
+		}
+		if len(outApply) > 0 || needFieldReadback {
+			var readbackIDs []string
+			for _, r := range fieldMap {
+				readbackIDs = append(readbackIDs, r.ExternalField)
+			}
+			if ri, gerr := client.GetIssue(ctx, link.JiraIssueID, readbackIDs); gerr == nil {
 				md, _ := ADFToMarkdown(ri.DescriptionADF)
 				refreshed = &ObservedIssue{Summary: ri.Summary, DescriptionMD: md, StatusID: ri.StatusID}
+				refreshedFields = map[string]string{}
+				for k, v := range ri.Fields {
+					refreshedFields[k] = string(v)
+				}
 			}
 		}
 		for _, apply := range outApply {
 			apply(refreshed)
+		}
+		// Forward pushed custom-field RemoteSHA from the actual Jira value so
+		// the next observation sees no phantom remote change (FR-20 fixpoint).
+		for external := range outFields {
+			if external == "summary" || external == "description" || external == "labels" {
+				continue
+			}
+			st := items.Fields[external]
+			if refreshedFields != nil {
+				if rv, ok := refreshedFields[external]; ok {
+					st.RemoteSHA = SHA(rv)
+				}
+			}
+			items.Fields[external] = st
 		}
 		for _, bc := range outBreadcrumbs {
 			markBreadcrumb(&items, bc)
@@ -685,12 +744,17 @@ func (w *Worker) applyOutTransition(ctx context.Context, conn db.JiraConnection,
 // markBreadcrumb records that a breadcrumb has been posted for a discarded
 // value so it never re-posts (FR-8 once).
 func markBreadcrumb(items *ItemsV1, act Action) {
-	switch act.Item {
-	case "title":
+	switch {
+	case act.Item == "title":
 		items.Title.BreadcrumbFor = SHA(act.Old)
-	case "description":
+	case act.Item == "description":
 		items.Description.BreadcrumbFor = SHA(act.Old)
-	case "status":
+	case act.Item == "status":
 		items.Status.BreadcrumbFor = SHA(act.Old)
+	case strings.HasPrefix(act.Item, "field:"):
+		external := strings.TrimPrefix(act.Item, "field:")
+		st := items.Fields[external]
+		st.BreadcrumbFor = SHA(act.Old)
+		items.Fields[external] = st
 	}
 }
