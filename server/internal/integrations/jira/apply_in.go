@@ -140,7 +140,8 @@ func (w *Worker) importIssue(ctx context.Context, conn db.JiraConnection, sm Sta
 	}
 	link.IssueID = res.Issue.ID
 	link.State = "ok"
-	if cerr := w.mirrorComments(ctx, conn, link, cycleID); cerr != nil {
+	// Backfill: mirror history WITHOUT waking agents (wakeEnabled=false).
+	if cerr := w.mirrorComments(ctx, conn, link, cycleID, false); cerr != nil {
 		_ = w.Journal.Record(ctx, conn, cycleID, JournalItemDirty, res.Issue.ID, obs.Key, map[string]any{
 			"error": redactError(cerr), "at": "import_comments",
 		})
@@ -172,6 +173,13 @@ func seededImportItems(obs ObservedIssue, sm StatusMap) ([]byte, error) {
 		localStatus = "backlog"
 	}
 	items.Status = StatusState{RemoteID: obs.StatusID, Local: localStatus}
+	// Trigger safety (RU §25): every signal present at import is recorded as
+	// already-fired, so a pre-existing label/assignee is context — never a
+	// first-cycle edge. Only signals that CHANGE after import can trigger.
+	items.Tag = TagState{
+		FiredLabels:   normalizeSet(obs.Labels),
+		FiredAssignee: obs.AssigneeKey,
+	}
 	return json.Marshal(items)
 }
 
@@ -582,7 +590,7 @@ func settingsFromConnection(conn db.JiraConnection) Settings {
 // FR-18); here they only count into Health. Service-account comments are
 // never mirrored as content — they are sync's own writes (actor filter),
 // scanned for outbound intent markers by the Epic-3 outbound story.
-func (w *Worker) mirrorComments(ctx context.Context, conn db.JiraConnection, link db.JiraLink, cycleID pgtype.UUID) error {
+func (w *Worker) mirrorComments(ctx context.Context, conn db.JiraConnection, link db.JiraLink, cycleID pgtype.UUID, wakeEnabled bool) error {
 	if !conn.CommentsEnabled {
 		return nil
 	}
@@ -674,14 +682,19 @@ func (w *Worker) mirrorComments(ctx context.Context, conn db.JiraConnection, lin
 		// Wake each mentioned agent through the native mention-enqueue path
 		// (explicit mentions only; the mirrored comment is system-authored so
 		// implicit routing never fires — AD-6). A denied invocation is
-		// journaled, never silently dropped and never author-faked.
-		w.wakeMentionedAgents(ctx, conn, link, comment.ID, wake, cycleID)
+		// journaled, never silently dropped and never author-faked. Backfill
+		// (import-time) mirroring passes wakeEnabled=false: historical mentions
+		// are context, never events (RU §25) — the comment is still mirrored so
+		// the agent has the context, it just does not trigger a run.
+		if wakeEnabled {
+			w.wakeMentionedAgents(ctx, conn, link, comment.ID, wake, cycleID, rc.AuthorID)
+		}
 	}
 	return nil
 }
 
 // wakeMentionedAgents enqueues one native mention task per mentioned agent.
-func (w *Worker) wakeMentionedAgents(ctx context.Context, conn db.JiraConnection, link db.JiraLink, commentID pgtype.UUID, agentIDs []pgtype.UUID, cycleID pgtype.UUID) {
+func (w *Worker) wakeMentionedAgents(ctx context.Context, conn db.JiraConnection, link db.JiraLink, commentID pgtype.UUID, agentIDs []pgtype.UUID, cycleID pgtype.UUID, actorAccountID string) {
 	if len(agentIDs) == 0 || w.Tasks == nil {
 		return
 	}
@@ -697,7 +710,12 @@ func (w *Worker) wakeMentionedAgents(ctx context.Context, conn db.JiraConnection
 			_ = w.Journal.Record(ctx, conn, cycleID, JournalMentionDenied, link.IssueID, link.JiraKey, map[string]any{
 				"agent_id": uuidStr(agentID), "error": redactError(eerr),
 			})
+			continue
 		}
+		// Trace every triggered run back to the Jira author who caused it.
+		_ = w.Journal.Record(ctx, conn, cycleID, JournalMentionWoken, link.IssueID, link.JiraKey, map[string]any{
+			"agent_id": uuidStr(agentID), "actor_account_id": actorAccountID,
+		})
 	}
 }
 

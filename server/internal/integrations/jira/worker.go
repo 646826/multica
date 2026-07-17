@@ -233,7 +233,8 @@ func (w *Worker) cycleBody(ctx context.Context, conn db.JiraConnection, cycleID 
 			seenLinked = append(seenLinked, obs.ID)
 			processed[link.ID.Bytes] = true
 			w.updateIssue(ctx, conn, sm, fieldRows, link, &obs, cycleID)
-			if cerr := w.mirrorComments(ctx, conn, link, cycleID); cerr != nil {
+			// Live pair: new comments wake mentioned agents (wakeEnabled=true).
+			if cerr := w.mirrorComments(ctx, conn, link, cycleID, true); cerr != nil {
 				_ = w.Journal.Record(ctx, conn, cycleID, JournalItemDirty, link.IssueID, obs.Key, map[string]any{
 					"error": redactError(cerr), "at": "comments",
 				})

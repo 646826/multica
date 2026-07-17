@@ -358,15 +358,20 @@ func TestRoundTripLabelToAgentToJira(t *testing.T) {
 }
 
 // Regression (adversarial review #5): a rule whose agent does not yet exist
-// must NOT consume the edge — it fires once the agent is created.
+// must NOT consume the edge — it fires once the agent is created. The signal
+// is a LIVE post-connect edge (a label added after import): pre-existing labels
+// present at import are history and never auto-fire (RU §13, §25), so this test
+// adds the label after the initial import to exercise the real edge path.
 func TestTagRuleReFiresAfterAgentAppears(t *testing.T) {
 	f := newFakeJira(t)
 	now := time.Now().UTC()
+	labels := atomic.Value{}
+	labels.Store(`[]`)
 	f.mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"issues":[{"id":"id-GAME-A1","key":"GAME-A1","fields":{
 			"summary":"B","description":{"type":"doc","version":1,"content":[]},
 			"status":{"id":"100","name":"To Do","statusCategory":{"key":"new"}},
-			"labels":["agent:later"],"updated":%q}}],"isLast":true}`, now.Format(jiraTimeLayout))
+			"labels":%s,"updated":%q}}],"isLast":true}`, labels.Load(), now.Format(jiraTimeLayout))
 	})
 	f.mux.HandleFunc("/rest/api/3/issue/id-GAME-A1/comment", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"comments":[],"startAt":0,"maxResults":100,"total":0}`))
@@ -384,10 +389,18 @@ func TestTagRuleReFiresAfterAgentAppears(t *testing.T) {
 		c, _ = q.GetJiraConnectionByID(ctx, conn.ID)
 		return c
 	}
+	// Import with no label — nothing fires.
 	if _, err := w.runCycle(ctx, conn); err != nil {
-		t.Fatalf("cycle: %v", err)
+		t.Fatalf("import: %v", err)
 	}
 	link, _ := q.GetJiraLinkByJiraIssueID(ctx, db.GetJiraLinkByJiraIssueIDParams{ConnectionID: conn.ID, JiraIssueID: "id-GAME-A1"})
+
+	// The label is added post-connect → a genuine live edge — but the agent is
+	// missing, so the edge must NOT be consumed.
+	labels.Store(`["agent:later"]`)
+	if _, err := w.runCycle(ctx, rewind()); err != nil {
+		t.Fatalf("missing-agent cycle: %v", err)
+	}
 	issue, _ := q.GetIssue(ctx, link.IssueID)
 	if issue.AssigneeType.String == "agent" {
 		t.Fatal("must not assign a non-existent agent")
