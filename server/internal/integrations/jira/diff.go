@@ -365,6 +365,16 @@ func planStatus(in PlanInput, leading string) []Action {
 		if mapped, ok := in.StatusMap.In[currentRemoteID]; ok && mapped == in.Local.Status {
 			return
 		}
+		// Terminal-stop safety (RU §12.2): the sides genuinely differ, but a
+		// human moved Jira into a Done category (Done/Cancelled). Never cross
+		// that with a late automated transition — suppress and surface it. Only
+		// applies when the remote is observed this cycle (in.Remote != nil).
+		if in.Remote != nil && in.Remote.StatusCategory == "done" {
+			out = append(out, Action{Kind: ActSkip, Item: "status", Journal: JournalStatusTerminalGuard,
+				Detail: map[string]any{"jira_status_id": in.Remote.StatusID, "jira_status": in.Remote.StatusName,
+					"multica_status": in.Local.Status}})
+			return
+		}
 		targetID, ok := in.StatusMap.Out[in.Local.Status]
 		if !ok {
 			out = append(out, Action{Kind: ActSkip, Item: "status", Journal: JournalStatusUnmapped,

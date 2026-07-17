@@ -47,6 +47,10 @@ const (
 	// Outbound status (FR-17) with recovery pairing.
 	JournalTransitionUnreachable JournalKind = "transition_unreachable"
 	JournalTransitionRecovered   JournalKind = "transition_recovered"
+	// Terminal-stop safety (RU §12.2): a human moved Jira to a Done-category
+	// status; an outbound transition off it is suppressed rather than crossing
+	// a human decision with a late automated move.
+	JournalStatusTerminalGuard JournalKind = "status_terminal_guard"
 	// Outbound creation (FR-9, AD-15).
 	JournalOutboundCreated  JournalKind = "outbound_created"
 	JournalCreateRejected   JournalKind = "create_rejected"
@@ -82,6 +86,7 @@ var journalKinds = map[JournalKind]bool{
 	JournalCommentAdopted:           true,
 	JournalTransitionUnreachable:    true,
 	JournalTransitionRecovered:      true,
+	JournalStatusTerminalGuard:      true,
 	JournalOutboundCreated:          true,
 	JournalCreateRejected:           true,
 	JournalLabelTransformed:         true,

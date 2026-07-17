@@ -253,3 +253,54 @@ func TestDiffFileIsPure(t *testing.T) {
 		}
 	}
 }
+
+// A human moving Jira to a Done-category status (Done/Cancelled) during a run
+// must not be crossed by a late outbound transition (RU §12.2): the planner
+// emits a terminal-guard skip instead of a transition.
+func TestPlanStatusGuardsHumanTerminal(t *testing.T) {
+	s := Settings{Mode: ModeTwoWay, LeadingSystem: LeadMultica}
+	in := PlanInput{
+		Settings:  s,
+		Items:     ItemsV1{V: 1, Status: StatusState{RemoteID: "100", Local: "in_progress"}},
+		Remote:    &ObservedIssue{StatusID: "900", StatusName: "Cancelled", StatusCategory: "done"},
+		Local:     &LocalIssue{Status: "done"},
+		StatusMap: StatusMap{In: map[string]string{"100": "in_progress", "900": "cancelled"}, Out: map[string]string{"done": "800"}},
+	}
+	acts := planStatus(in, EffectiveLeading(s))
+	for _, a := range acts {
+		if a.Kind == ActOutTransition {
+			t.Fatalf("planned a transition off a human terminal status: %+v", a)
+		}
+	}
+	found := false
+	for _, a := range acts {
+		if a.Kind == ActSkip && a.Journal == JournalStatusTerminalGuard {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a terminal-guard skip, got %+v", acts)
+	}
+}
+
+// The guard must NOT fire on a normal (non-terminal) outbound transition.
+func TestPlanStatusAllowsNonTerminalOutbound(t *testing.T) {
+	s := Settings{Mode: ModeMulticaLeads, LeadingSystem: LeadMultica}
+	in := PlanInput{
+		Settings:  s,
+		Items:     ItemsV1{V: 1, Status: StatusState{RemoteID: "100", Local: "todo"}},
+		Remote:    &ObservedIssue{StatusID: "100", StatusName: "To Do", StatusCategory: "new"},
+		Local:     &LocalIssue{Status: "in_review"},
+		StatusMap: StatusMap{In: map[string]string{"100": "todo"}, Out: map[string]string{"in_review": "300"}},
+	}
+	acts := planStatus(in, EffectiveLeading(s))
+	var transition *Action
+	for i := range acts {
+		if acts[i].Kind == ActOutTransition {
+			transition = &acts[i]
+		}
+	}
+	if transition == nil || transition.Target != "300" {
+		t.Fatalf("non-terminal remote must still transition to 300, got %+v", acts)
+	}
+}
