@@ -1193,6 +1193,210 @@ func TestCodexRawItemCommandExecution(t *testing.T) {
 	}
 }
 
+func TestCodexRawItemMCPToolCall(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+
+	var messages []Message
+	c.onMessage = func(msg Message) {
+		messages = append(messages, msg)
+	}
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"item/started","params":{"item":{"type":"mcpToolCall","id":"mcp-1","server":"support_flow","tool":"read_support_context","arguments":{"workflow_key":"341265:44970182078:support-shadow-v1","_mcp_server":"spoofed","customer":"private customer context","authorization":"Bearer secret"},"status":"inProgress"}}}`)
+	c.handleLine(`{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"mcpToolCall","id":"mcp-1","server":"support_flow","tool":"read_support_context","status":"completed","result":{"content":[{"type":"text","text":"private customer context"}],"structuredContent":{"schema":"support-context-read/v1","role":"lead","workflow_key":"341265:44970182078:support-shadow-v1","attempt":1,"untrusted_context":{"body":"private customer context"}},"_meta":{"authorization":"Bearer secret"}},"error":null}}}`)
+
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d: %+v", len(messages), messages)
+	}
+	if messages[0].Type != MessageToolUse || messages[0].Tool != "read_support_context" || messages[0].CallID != "mcp-1" {
+		t.Fatalf("unexpected MCP start message: %+v", messages[0])
+	}
+	if got := messages[0].Input["_mcp_server"]; got != "support_flow" {
+		t.Fatalf("untrusted MCP server metadata was not overwritten: %+v", messages[0].Input)
+	}
+	if _, leaked := messages[0].Input["workflow_key"]; leaked {
+		t.Fatalf("MCP input must not persist raw arguments: %+v", messages[0].Input)
+	}
+	assertCodexMCPReceiptHash(t, messages[0].Input, "arguments_sha256")
+	inputBytes, err := json.Marshal(messages[0].Input)
+	if err != nil {
+		t.Fatalf("MCP input is not JSON-marshalable: %v", err)
+	}
+	for _, secret := range []string{"private customer context", "Bearer secret"} {
+		if strings.Contains(string(inputBytes), secret) {
+			t.Fatalf("MCP input leaked %q: %s", secret, inputBytes)
+		}
+	}
+	if messages[1].Type != MessageToolResult || messages[1].Tool != "read_support_context" || messages[1].CallID != "mcp-1" {
+		t.Fatalf("unexpected MCP complete message: %+v", messages[1])
+	}
+
+	receipt := parseCodexMCPReceipt(t, messages[1].Output)
+	if got := receipt["status"]; got != "completed" {
+		t.Fatalf("MCP receipt status = %v, want completed: %+v", got, receipt)
+	}
+	for _, key := range []string{"result_sha256", "structured_content_sha256"} {
+		assertCodexMCPReceiptHash(t, receipt, key)
+	}
+	if len(receipt) != 4 {
+		t.Fatalf("successful receipt contains unexpected fields: %+v", receipt)
+	}
+	structured, ok := receipt["structured_content_summary"].(map[string]any)
+	if !ok || structured["schema"] != "support-context-read/v1" || structured["role"] != "lead" {
+		t.Fatalf("unexpected MCP structured summary: %+v", receipt)
+	}
+	if _, leaked := structured["untrusted_context"]; leaked {
+		t.Fatalf("untrusted context must not be copied into durable receipt: %+v", receipt)
+	}
+	for _, secret := range []string{"private customer context", "Bearer secret"} {
+		if strings.Contains(messages[1].Output, secret) {
+			t.Fatalf("MCP receipt leaked %q: %s", secret, messages[1].Output)
+		}
+	}
+}
+
+func TestCodexRawItemMCPToolCallFailureIsHashed(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+
+	var messages []Message
+	c.onMessage = func(msg Message) {
+		messages = append(messages, msg)
+	}
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"mcpToolCall","id":"mcp-failed","server":"support_flow","tool":"submit_support_review","status":"failed","result":{"content":[{"type":"text","text":"customer Alice"}]},"error":{"message":"Authorization: Bearer super-secret"}}}}`)
+
+	if len(messages) != 1 {
+		t.Fatalf("expected one failed result message, got %d: %+v", len(messages), messages)
+	}
+	if messages[0].Type != MessageToolResult || messages[0].Tool != "submit_support_review" || messages[0].CallID != "mcp-failed" {
+		t.Fatalf("unexpected failed MCP result: %+v", messages[0])
+	}
+	receipt := parseCodexMCPReceipt(t, messages[0].Output)
+	if got := receipt["status"]; got != "failed" {
+		t.Fatalf("failed MCP receipt status = %v, want failed: %+v", got, receipt)
+	}
+	assertCodexMCPReceiptHash(t, receipt, "result_sha256")
+	assertCodexMCPReceiptHash(t, receipt, "error_sha256")
+	for _, secret := range []string{"customer Alice", "Bearer super-secret", "Authorization"} {
+		if strings.Contains(messages[0].Output, secret) {
+			t.Fatalf("failed MCP receipt leaked %q: %s", secret, messages[0].Output)
+		}
+	}
+}
+
+func TestCodexMCPToolCallOutputMalformedIsDeterministic(t *testing.T) {
+	t.Parallel()
+
+	item := map[string]any{
+		"status": "completed",
+		"result": "malformed private customer result",
+		"error":  "malformed secret error",
+	}
+	first := codexMCPToolCallOutput(item)
+	second := codexMCPToolCallOutput(item)
+	if first != second {
+		t.Fatalf("malformed receipt is not deterministic:\nfirst:  %s\nsecond: %s", first, second)
+	}
+	receipt := parseCodexMCPReceipt(t, first)
+	assertCodexMCPReceiptHash(t, receipt, "result_sha256")
+	assertCodexMCPReceiptHash(t, receipt, "error_sha256")
+	if receipt["receipt_error"] != "malformed_result" {
+		t.Fatalf("malformed result was not classified: %+v", receipt)
+	}
+	if strings.Contains(first, "private customer") || strings.Contains(first, "secret error") {
+		t.Fatalf("malformed MCP receipt leaked raw output: %s", first)
+	}
+}
+
+func TestCodexMCPToolCallOutputIsBounded(t *testing.T) {
+	t.Parallel()
+
+	large := strings.Repeat("customer context and secret token ", 20_000)
+	item := map[string]any{
+		"status": "completed",
+		"result": map[string]any{
+			"content": []any{map[string]any{"type": "text", "text": large}},
+			"structuredContent": map[string]any{
+				"schema":            large,
+				"role":              "lead",
+				"workflow_key":      "341265:44970182078:support-shadow-v1",
+				"attempt":           float64(1),
+				"untrusted_context": large,
+			},
+		},
+	}
+	first := codexMCPToolCallOutput(item)
+	second := codexMCPToolCallOutput(item)
+	if first != second {
+		t.Fatal("oversize MCP receipt is not deterministic")
+	}
+	if len(first) >= 8192 {
+		t.Fatalf("durable MCP receipt is not bounded: %d bytes", len(first))
+	}
+	receipt := parseCodexMCPReceipt(t, first)
+	assertCodexMCPReceiptHash(t, receipt, "result_sha256")
+	assertCodexMCPReceiptHash(t, receipt, "structured_content_sha256")
+	if strings.Contains(first, "customer context") || strings.Contains(first, "secret token") {
+		t.Fatalf("bounded MCP receipt leaked raw result content: %s", first)
+	}
+	structured, ok := receipt["structured_content_summary"].(map[string]any)
+	if !ok || structured["role"] != "lead" || structured["workflow_key"] != "341265:44970182078:support-shadow-v1" {
+		t.Fatalf("safe bounded fields were not preserved: %+v", receipt)
+	}
+	if _, exists := structured["schema"]; exists {
+		t.Fatalf("oversize summary field must be omitted: %+v", structured)
+	}
+}
+
+func TestCodexRawItemMCPToolCallMissingIdentityIgnored(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+
+	var messages []Message
+	c.onMessage = func(msg Message) {
+		messages = append(messages, msg)
+	}
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"item/started","params":{"item":{"type":"mcpToolCall","id":"mcp-1","server":"support_flow","arguments":{}}}}`)
+	c.handleLine(`{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"mcpToolCall","server":"support_flow","tool":"read_support_context","status":"completed","result":{"content":[]}}}}`)
+
+	if len(messages) != 0 {
+		t.Fatalf("incomplete MCP item identity must be ignored, got %+v", messages)
+	}
+}
+
+func parseCodexMCPReceipt(t *testing.T, output string) map[string]any {
+	t.Helper()
+	if len(output) >= 8192 {
+		t.Fatalf("MCP receipt is not below 8 KiB: %d bytes", len(output))
+	}
+	var receipt map[string]any
+	if err := json.Unmarshal([]byte(output), &receipt); err != nil {
+		t.Fatalf("MCP receipt is not JSON: %v; output=%q", err, output)
+	}
+	return receipt
+}
+
+func assertCodexMCPReceiptHash(t *testing.T, receipt map[string]any, key string) {
+	t.Helper()
+	value, ok := receipt[key].(string)
+	if !ok || len(value) != 64 {
+		t.Fatalf("MCP receipt %s is not a SHA-256: %+v", key, receipt)
+	}
+	for _, char := range value {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			t.Fatalf("MCP receipt %s is not lowercase hexadecimal: %+v", key, receipt)
+		}
+	}
+}
+
 func TestCodexRawItemAgentMessageFinalAnswer(t *testing.T) {
 	t.Parallel()
 

@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2922,6 +2923,36 @@ func (c *codexClient) handleItemNotification(method string, params map[string]an
 			})
 		}
 
+	case method == "item/started" && itemType == "mcpToolCall":
+		server, _ := item["server"].(string)
+		tool, _ := item["tool"].(string)
+		if itemID == "" || server == "" || tool == "" {
+			return
+		}
+		if c.onMessage != nil {
+			c.onMessage(Message{
+				Type:   MessageToolUse,
+				Tool:   tool,
+				CallID: itemID,
+				Input:  codexMCPToolCallInput(server, item["arguments"]),
+			})
+		}
+
+	case method == "item/completed" && itemType == "mcpToolCall":
+		server, _ := item["server"].(string)
+		tool, _ := item["tool"].(string)
+		if itemID == "" || server == "" || tool == "" {
+			return
+		}
+		if c.onMessage != nil {
+			c.onMessage(Message{
+				Type:   MessageToolResult,
+				Tool:   tool,
+				CallID: itemID,
+				Output: codexMCPToolCallOutput(item),
+			})
+		}
+
 	case method == "item/started" && itemType == "fileChange":
 		if c.onMessage != nil {
 			c.onMessage(Message{
@@ -2965,6 +2996,156 @@ func (c *codexClient) handleItemNotification(method string, params map[string]an
 			}
 		}
 	}
+}
+
+func codexMCPToolCallInput(server string, arguments any) map[string]any {
+	input := map[string]any{"_mcp_server": server}
+	if arguments == nil {
+		return input
+	}
+	// MCP arguments can contain customer context or credentials. Persist only a
+	// binding hash plus the trusted server name from the app-server event.
+	input["arguments_sha256"] = codexMCPValueSHA256(arguments)
+	return input
+}
+
+const (
+	codexMCPReceiptMaxBytes             = 8192
+	codexMCPSummaryValueMaxEncodedBytes = 512
+)
+
+var codexMCPStructuredSummaryKeys = []string{
+	"schema",
+	"schema_version",
+	"status",
+	"operation",
+	"role",
+	"workflow_key",
+	"attempt",
+	"comment_id",
+	"source_task_id",
+	"target_agent_id",
+	"artifact_sha256",
+	"error_code",
+	"retryable",
+}
+
+// codexMCPToolCallOutput records a bounded, verifiable receipt rather than the
+// raw result. MCP results can contain customer context, transport metadata, or
+// credentials and can be much larger than the durable task-message limit.
+// Hashes bind the receipt to the public result while a strict scalar allowlist
+// exposes only workflow metadata used by release gates.
+func codexMCPToolCallOutput(item map[string]any) string {
+	receipt := map[string]any{
+		"status": codexMCPReceiptStatus(item["status"]),
+	}
+
+	resultValue, hasResult := item["result"]
+	result, resultOK := resultValue.(map[string]any)
+	if resultOK && result != nil {
+		public := make(map[string]any, 2)
+		for _, key := range []string{"content", "structuredContent"} {
+			if value, exists := result[key]; exists {
+				public[key] = value
+			}
+		}
+		receipt["result_sha256"] = codexMCPValueSHA256(public)
+
+		if structured, exists := result["structuredContent"]; exists {
+			receipt["structured_content_sha256"] = codexMCPValueSHA256(structured)
+			if summary := codexMCPStructuredSummary(structured); len(summary) > 0 {
+				receipt["structured_content_summary"] = summary
+			}
+		} else if receipt["status"] == "completed" {
+			receipt["receipt_error"] = "missing_structured_content"
+		}
+	} else {
+		receipt["result_sha256"] = codexMCPValueSHA256(resultValue)
+		if hasResult && resultValue != nil {
+			receipt["receipt_error"] = "malformed_result"
+		} else if receipt["status"] == "completed" {
+			receipt["receipt_error"] = "missing_result"
+		}
+	}
+
+	if callError, exists := item["error"]; exists && callError != nil {
+		receipt["error_sha256"] = codexMCPValueSHA256(callError)
+	}
+
+	return marshalCodexMCPReceipt(receipt)
+}
+
+func codexMCPReceiptStatus(value any) string {
+	status, _ := value.(string)
+	switch status {
+	case "completed", "failed", "cancelled", "canceled":
+		return status
+	default:
+		return "unknown"
+	}
+}
+
+func codexMCPStructuredSummary(structured any) map[string]any {
+	object, ok := structured.(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	summary := make(map[string]any, len(codexMCPStructuredSummaryKeys))
+	for _, key := range codexMCPStructuredSummaryKeys {
+		value, exists := object[key]
+		if !exists || !codexMCPReceiptScalar(value) {
+			continue
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil || len(encoded) > codexMCPSummaryValueMaxEncodedBytes {
+			continue
+		}
+		summary[key] = value
+	}
+	return summary
+}
+
+func codexMCPReceiptScalar(value any) bool {
+	switch value.(type) {
+	case nil, string, bool,
+		float32, float64,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64:
+		return true
+	default:
+		return false
+	}
+}
+
+func codexMCPValueSHA256(value any) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		data = []byte("unmarshalable:" + fmt.Sprintf("%T", value))
+	}
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("%x", sum)
+}
+
+func marshalCodexMCPReceipt(receipt map[string]any) string {
+	data, err := json.Marshal(receipt)
+	if err == nil && len(data) < codexMCPReceiptMaxBytes {
+		return string(data)
+	}
+
+	// This branch is fail-closed and deliberately contains no raw values. It
+	// should only be reachable if a future receipt field bypasses the bounds
+	// above or becomes non-JSON-serializable.
+	fallbackSource := data
+	if err != nil {
+		fallbackSource = []byte("receipt_marshal_error")
+	}
+	sum := sha256.Sum256(fallbackSource)
+	fallback, _ := json.Marshal(map[string]any{
+		"status":         "receipt_error",
+		"receipt_sha256": fmt.Sprintf("%x", sum),
+	})
+	return string(fallback)
 }
 
 func isCodexItemProgressActivity(method string) bool {
