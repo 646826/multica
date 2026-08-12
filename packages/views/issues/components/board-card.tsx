@@ -141,6 +141,7 @@ export const BoardCardContent = memo(function BoardCardContent({
         actorId={issue.assignee_id!}
         size="sm"
         enableHoverCard
+        profileLink={false}
         className="shrink-0"
       />
       {assigneeName && (
